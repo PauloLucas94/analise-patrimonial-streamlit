@@ -8,7 +8,7 @@ __pycache__/
 .streamlit/
 
 # Data (se usar URLs)
-data/*.csv
+#data/*.csv
 !data/.gitkeep
 
 # IDE
