@@ -49,7 +49,6 @@ class PatrimonioAnalyzer:
                 dataframes.append(df)
                 st.success(f"✓ {csv_file.name}: {len(df)} registros carregados")
             except UnicodeDecodeError:
-                # Tenta com outra codificação
                 try:
                     df = pd.read_csv(csv_file, encoding='latin-1')
                     df['arquivo_origem'] = csv_file.name
@@ -89,7 +88,6 @@ class PatrimonioAnalyzer:
         
         for url in urls:
             try:
-                # Ajusta URL do Google Drive se necessário
                 if 'drive.google.com' in url:
                     file_id = url.split('/d/')[1].split('/')[0]
                     url = f'https://drive.google.com/uc?id={file_id}'
@@ -111,22 +109,20 @@ class PatrimonioAnalyzer:
         if self.data is None:
             return False
         
-        # Limpeza de colunas
         self.data.columns = self.data.columns.str.strip()
         
-        # Conversão de datas
         if 'Data Incorporação' in self.data.columns:
             self.data['Data Incorporação'] = pd.to_datetime(self.data['Data Incorporação'], errors='coerce')
             self.data['Ano Incorporação'] = self.data['Data Incorporação'].dt.year
+            # Calcula idade dos itens
+            self.data['Idade_Item'] = 2025 - self.data['Ano Incorporação']
         
-        # Conversão de similaridade
         if 'Percentagem de Similaridade (%)' in self.data.columns:
             self.data['Similaridade_Num'] = pd.to_numeric(
                 self.data['Percentagem de Similaridade (%)'].str.replace('%', ''), 
                 errors='coerce'
             )
         
-        # Conversão de valores monetários
         if 'Valor Aquisição' in self.data.columns:
             self.data['Valor_Aquisicao_Num'] = pd.to_numeric(
                 self.data['Valor Aquisição'].str.replace('R$', '').str.replace('.', '').str.replace(',', '.').str.strip(),
@@ -139,16 +135,13 @@ class PatrimonioAnalyzer:
                 errors='coerce'
             )
         
-        # Conversão de vida útil
         if 'Vida' in self.data.columns:
             self.data['Vida_Num'] = pd.to_numeric(self.data['Vida'], errors='coerce')
         
-        # Categorização
         if 'Justificativa de Reprova' in self.data.columns:
             self.data['Decisao'] = self.data['Justificativa de Reprova'].apply(self._categorizar_decisao)
             self.data['Categoria_Similaridade'] = self.data['Similaridade_Num'].apply(self._categorizar_similaridade)
         
-        # Localização
         if 'Localização' in self.data.columns:
             self.data['Regiao'] = self.data['Localização'].apply(self._extrair_regiao)
         
@@ -214,7 +207,6 @@ class PatrimonioAnalyzer:
         
         return filtered
 
-# Funções de visualização
 def create_decision_pie_chart(data):
     """Gráfico de pizza das decisões"""
     decisoes = data['Decisao'].value_counts()
@@ -306,16 +298,16 @@ def create_strategic_metrics(data):
     if total_itens == 0:
         return {}, {}
     
-    # Contadores por decisão
     decisoes = data['Decisao'].value_counts()
     reclassificar = decisoes.get('RECLASSIFICAR', 0)
     avaliar = decisoes.get('AVALIAR', 0)
     manter = decisoes.get('MANTER', 0)
     
-    # Estatísticas de similaridade
     similaridade_stats = data['Similaridade_Num'].describe()
     
-    # Métricas principais
+    # Calcula idade média dos itens
+    idade_media = data['Idade_Item'].mean() if 'Idade_Item' in data.columns else 0
+    
     metrics = {
         'total_itens': total_itens,
         'reclassificar': reclassificar,
@@ -324,10 +316,10 @@ def create_strategic_metrics(data):
         'percentual_reclassificar': (reclassificar / total_itens) * 100,
         'percentual_avaliar': (avaliar / total_itens) * 100,
         'similaridade_media': similaridade_stats.get('mean', 0),
-        'alta_similaridade': len(data[data['Similaridade_Num'] >= 70])
+        'alta_similaridade': len(data[data['Similaridade_Num'] >= 70]),
+        'idade_media': idade_media
     }
     
-    # Análise regional
     regional_analysis = data.groupby('Regiao').agg({
         'Decisao': lambda x: (x == 'RECLASSIFICAR').sum(),
         'Similaridade_Num': 'mean'
@@ -342,17 +334,14 @@ def export_to_excel(data):
     output = BytesIO()
     
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-        # Dados principais
         data.to_excel(writer, sheet_name='Dados_Completos', index=False)
         
-        # Resumo por decisão
         decisao_summary = data.groupby('Decisao').agg({
             'Similaridade_Num': ['count', 'mean', 'min', 'max'],
             'Ano Incorporação': ['min', 'max']
         }).round(2)
         decisao_summary.to_excel(writer, sheet_name='Resumo_Decisoes')
         
-        # Resumo regional
         regional_summary = data.groupby('Regiao').agg({
             'Decisao': lambda x: x.value_counts().to_dict(),
             'Similaridade_Num': ['count', 'mean']
@@ -385,22 +374,18 @@ def create_demo_data():
     
     return pd.DataFrame(sample_data)
 
-# Interface Streamlit
 def main():
     st.title("📊 Sistema de Análise de Patrimônio")
     st.markdown("---")
     
-    # Inicializar analyzer na sessão
     if 'analyzer' not in st.session_state:
         st.session_state.analyzer = PatrimonioAnalyzer()
     
     analyzer = st.session_state.analyzer
     
-    # Sidebar para configurações de carregamento
     with st.sidebar:
         st.header("⚙️ Configuração de Dados")
         
-        # Modo de carregamento
         load_mode = st.radio(
             "Modo de Carregamento:",
             ["🗂️ Pasta Local (Auto)", "📤 Upload Manual", "🔗 URLs Remotas", "🎯 Demonstração"],
@@ -409,7 +394,6 @@ def main():
         
         st.markdown("---")
         
-        # Carregamento baseado no modo selecionado
         if load_mode == "🗂️ Pasta Local (Auto)":
             st.info("📂 Carregamento automático da pasta 'data/'")
             
@@ -423,7 +407,6 @@ def main():
                         else:
                             st.error("Erro no processamento dos dados")
             
-            # Auto-load na inicialização
             if not analyzer.processed and 'auto_loaded' not in st.session_state:
                 with st.spinner("Carregando dados automaticamente..."):
                     if analyzer.load_data_from_folder(folder_path):
@@ -466,18 +449,16 @@ def main():
                             else:
                                 st.error("Erro no processamento dos dados")
         
-        else:  # Demonstração
+        else:
             if st.button("🎯 Gerar Dados de Demonstração"):
                 with st.spinner("Criando dados de demonstração..."):
                     analyzer.data = create_demo_data()
                     analyzer.preprocess_data()
                     st.success("✓ Dados de demonstração carregados!")
     
-    # Verificar se dados foram carregados
     if not analyzer.processed:
         st.info("👆 Configure o modo de carregamento na barra lateral para começar")
         
-        # Instruções
         with st.expander("📖 Como usar cada modo"):
             st.markdown("""
             ### 🗂️ Pasta Local (Auto)
@@ -500,20 +481,16 @@ def main():
         
         return
     
-    # Filtros na sidebar
     with st.sidebar:
         st.markdown("---")
         st.header("🔧 Filtros")
         
-        # Filtro de localização
         localizacoes = ["Todas"] + sorted(analyzer.data['Regiao'].unique().tolist())
         regiao_filter = st.selectbox("Localização", localizacoes)
         
-        # Filtro de decisão
         decisoes = ["Todas"] + sorted(analyzer.data['Decisao'].unique().tolist())
         decisao_filter = st.selectbox("Decisão", decisoes)
         
-        # Filtro de ano
         anos = analyzer.data['Ano Incorporação'].dropna()
         if len(anos) > 0:
             ano_min, ano_max = st.slider(
@@ -525,24 +502,21 @@ def main():
         else:
             ano_min, ano_max = None, None
         
-        # Filtro de similaridade mínima
         similaridade_min = st.slider(
             "Similaridade Mínima (%)",
             0, 100, 0
         )
         
-        # Aplicar filtros
         filtered_data = analyzer.get_filtered_data(
             regiao_filter, decisao_filter, ano_min, ano_max, similaridade_min
         )
     
-    # Métricas principais
     st.header("📈 Resumo Executivo")
     
     metrics, regional_analysis = create_strategic_metrics(filtered_data)
     
     if metrics:
-        col1, col2, col3, col4 = st.columns(4)
+        col1, col2, col3, col4, col5 = st.columns(5)
         
         with col1:
             st.metric(
@@ -573,8 +547,14 @@ def main():
                 f"{metrics['similaridade_media']:.1f}%",
                 help="Percentual médio de similaridade com consumíveis"
             )
+        
+        with col5:
+            st.metric(
+                "Idade Média",
+                f"{metrics['idade_media']:.1f} anos",
+                help="Idade média dos itens patrimoniais (2025 - Ano de Incorporação)"
+            )
     
-    # Abas para diferentes análises
     tab1, tab2, tab3, tab4 = st.tabs(["📊 Visão Geral", "🔍 Análise Detalhada", "🏢 Análise por Localização", "📋 Dados e Export"])
     
     with tab1:
@@ -602,6 +582,51 @@ def main():
         fig_timeline = create_timeline_chart(filtered_data)
         st.plotly_chart(fig_timeline, use_container_width=True)
         
+        # Análise de Idade por Decisão
+        st.subheader("📅 Análise de Idade dos Itens")
+        
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            if 'Idade_Item' in filtered_data.columns:
+                idade_reclassificar = filtered_data[filtered_data['Decisao'] == 'RECLASSIFICAR']['Idade_Item'].mean()
+                st.metric(
+                    "Idade Média - RECLASSIFICAR",
+                    f"{idade_reclassificar:.1f} anos",
+                    help="Idade média dos itens para reclassificar"
+                )
+        
+        with col2:
+            if 'Idade_Item' in filtered_data.columns:
+                idade_avaliar = filtered_data[filtered_data['Decisao'] == 'AVALIAR']['Idade_Item'].mean()
+                st.metric(
+                    "Idade Média - AVALIAR",
+                    f"{idade_avaliar:.1f} anos",
+                    help="Idade média dos itens para avaliar"
+                )
+        
+        with col3:
+            if 'Idade_Item' in filtered_data.columns:
+                idade_manter = filtered_data[filtered_data['Decisao'] == 'MANTER']['Idade_Item'].mean()
+                st.metric(
+                    "Idade Média - MANTER",
+                    f"{idade_manter:.1f} anos",
+                    help="Idade média dos itens para manter"
+                )
+        
+        # Box plot de idade por decisão
+        if 'Idade_Item' in filtered_data.columns:
+            fig_idade = px.box(
+                filtered_data,
+                x='Decisao',
+                y='Idade_Item',
+                title="Distribuição de Idade por Tipo de Decisão",
+                labels={'Idade_Item': 'Idade (anos)', 'Decisao': 'Decisão'},
+                color='Decisao',
+                color_discrete_sequence=['#FF6B6B', '#4ECDC4', '#45B7D1', '#96CEB4']
+            )
+            st.plotly_chart(fig_idade, use_container_width=True)
+        
         st.subheader("⚠️ Itens de Alta Prioridade")
         
         alta_similaridade = filtered_data[filtered_data['Similaridade_Num'] >= 70]
@@ -624,6 +649,9 @@ def main():
             if len(reclassificacao_imediata) > 0:
                 similaridade_media = reclassificacao_imediata['Similaridade_Num'].mean()
                 st.write(f"**Similaridade média:** {similaridade_media:.1f}%")
+                if 'Idade_Item' in reclassificacao_imediata.columns:
+                    idade_media_reclas = reclassificacao_imediata['Idade_Item'].mean()
+                    st.write(f"**Idade média:** {idade_media_reclas:.1f} anos")
     
     with tab3:
         st.subheader("Análise por Localização")
@@ -658,6 +686,50 @@ def main():
     
     with tab4:
         st.subheader("Dados e Exportação")
+        
+        # Diagnóstico de Idade
+        with st.expander("🔍 Diagnóstico de Idade dos Itens"):
+            if 'Ano Incorporação' in filtered_data.columns and 'Idade_Item' in filtered_data.columns:
+                col1, col2, col3 = st.columns(3)
+                
+                with col1:
+                    st.metric("Ano Médio de Incorporação", 
+                             f"{filtered_data['Ano Incorporação'].mean():.0f}")
+                    st.metric("Ano Mínimo", 
+                             f"{filtered_data['Ano Incorporação'].min():.0f}")
+                    st.metric("Ano Máximo", 
+                             f"{filtered_data['Ano Incorporação'].max():.0f}")
+                
+                with col2:
+                    st.metric("Idade Média Calculada", 
+                             f"{filtered_data['Idade_Item'].mean():.1f} anos")
+                    st.metric("Idade Mínima", 
+                             f"{filtered_data['Idade_Item'].min():.0f} anos")
+                    st.metric("Idade Máxima", 
+                             f"{filtered_data['Idade_Item'].max():.0f} anos")
+                
+                with col3:
+                    total_registros = len(filtered_data)
+                    registros_com_data = filtered_data['Ano Incorporação'].notna().sum()
+                    registros_sem_data = total_registros - registros_com_data
+                    
+                    st.metric("Total de Registros", f"{total_registros:,}")
+                    st.metric("Com Data", f"{registros_com_data:,}")
+                    st.metric("Sem Data", f"{registros_sem_data:,}", 
+                             delta=f"{(registros_sem_data/total_registros*100):.1f}%" if total_registros > 0 else "0%")
+                
+                # Distribuição por década
+                st.write("**Distribuição por Década de Incorporação:**")
+                filtered_data['Decada'] = (filtered_data['Ano Incorporação'] // 10 * 10).astype('Int64')
+                decada_counts = filtered_data['Decada'].value_counts().sort_index()
+                
+                fig_decada = px.bar(
+                    x=decada_counts.index.astype(str),
+                    y=decada_counts.values,
+                    title="Quantidade de Itens por Década",
+                    labels={'x': 'Década', 'y': 'Quantidade de Itens'}
+                )
+                st.plotly_chart(fig_decada, use_container_width=True)
         
         st.write(f"**Mostrando {len(filtered_data):,} registros filtrados:**")
         
@@ -694,6 +766,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 # import streamlit as st
@@ -824,12 +897,29 @@ if __name__ == "__main__":
 #                 errors='coerce'
 #             )
         
+#         # Conversão de valores monetários
+#         if 'Valor Aquisição' in self.data.columns:
+#             self.data['Valor_Aquisicao_Num'] = pd.to_numeric(
+#                 self.data['Valor Aquisição'].str.replace('R$', '').str.replace('.', '').str.replace(',', '.').str.strip(),
+#                 errors='coerce'
+#             )
+        
+#         if 'Valor Contábil' in self.data.columns:
+#             self.data['Valor_Contabil_Num'] = pd.to_numeric(
+#                 self.data['Valor Contábil'].str.replace('R$', '').str.replace('.', '').str.replace(',', '.').str.strip(),
+#                 errors='coerce'
+#             )
+        
+#         # Conversão de vida útil
+#         if 'Vida' in self.data.columns:
+#             self.data['Vida_Num'] = pd.to_numeric(self.data['Vida'], errors='coerce')
+        
 #         # Categorização
 #         if 'Justificativa de Reprova' in self.data.columns:
 #             self.data['Decisao'] = self.data['Justificativa de Reprova'].apply(self._categorizar_decisao)
 #             self.data['Categoria_Similaridade'] = self.data['Similaridade_Num'].apply(self._categorizar_similaridade)
         
-#         # Região
+#         # Localização
 #         if 'Localização' in self.data.columns:
 #             self.data['Regiao'] = self.data['Localização'].apply(self._extrair_regiao)
         
@@ -895,7 +985,7 @@ if __name__ == "__main__":
         
 #         return filtered
 
-# # Funções de visualização (mantidas iguais)
+# # Funções de visualização
 # def create_decision_pie_chart(data):
 #     """Gráfico de pizza das decisões"""
 #     decisoes = data['Decisao'].value_counts()
@@ -1051,6 +1141,9 @@ if __name__ == "__main__":
 #         'Localização': np.random.choice(['1.01 BRÁS', '1.02 VILA ALPINA', '2.01 SANTOS', 'SENAI SEDE', '3.01 TAUBATÉ'], n_samples),
 #         'Inventário': range(1000000, 1000000 + n_samples),
 #         'Denominação do Imobilizado': [f"EQUIPAMENTO TESTE {i}" for i in range(n_samples)],
+#         'Vida': np.random.choice([10, 15, 20, 25, 50], n_samples),
+#         'Valor Aquisição': [f"R$ {np.random.uniform(100, 50000):.2f}".replace('.', ',') for _ in range(n_samples)],
+#         'Valor Contábil': [f"R$ {np.random.uniform(0, 30000):.2f}".replace('.', ',') for _ in range(n_samples)],
 #         'Item Consumível Similar': [f"CONSUMÍVEL SIMILAR {i}" for i in range(n_samples)],
 #         'Percentagem de Similaridade (%)': [f"{np.random.uniform(20, 85):.1f}%" for _ in range(n_samples)],
 #         'Data Incorporação': pd.date_range('2010-01-01', '2025-01-01', periods=n_samples),
@@ -1178,7 +1271,6 @@ if __name__ == "__main__":
         
 #         return
     
-#     # Resto da interface (mantido igual)
 #     # Filtros na sidebar
 #     with st.sidebar:
 #         st.markdown("---")
@@ -1254,7 +1346,7 @@ if __name__ == "__main__":
 #             )
     
 #     # Abas para diferentes análises
-#     tab1, tab2, tab3, tab4 = st.tabs(["📊 Visão Geral", "🔍 Análise Detalhada", "🏢 Análise Regional", "📋 Dados e Export"])
+#     tab1, tab2, tab3, tab4 = st.tabs(["📊 Visão Geral", "🔍 Análise Detalhada", "🏢 Análise por Localização", "📋 Dados e Export"])
     
 #     with tab1:
 #         st.subheader("Visão Geral dos Dados")
@@ -1343,7 +1435,7 @@ if __name__ == "__main__":
 #         show_columns = st.multiselect(
 #             "Selecione as colunas para exibir:",
 #             filtered_data.columns.tolist(),
-#             default=['Localização', 'Denominação do Imobilizado', 'Similaridade_Num', 'Decisao']
+#             default=['Localização', 'Inventário', 'Denominação do Imobilizado', 'Item Consumível Similar', 'Decisao']
 #         )
         
 #         if show_columns:
@@ -1373,3 +1465,5 @@ if __name__ == "__main__":
 
 # if __name__ == "__main__":
 #     main()
+
+
