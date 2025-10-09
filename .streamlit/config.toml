@@ -1,5 +1,11 @@
 [server]
 maxUploadSize = 500
+headless = true
+enableCORS = false
 
 [runner]
 magicEnabled = false
+fastReruns = true
+
+[browser]
+gatherUsageStats = false
