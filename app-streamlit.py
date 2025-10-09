@@ -3,13 +3,10 @@ import pandas as pd
 import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
-from plotly.subplots import make_subplots
-from datetime import datetime, date
-import re
+from datetime import datetime
 from io import BytesIO
-import base64
-import os
 from pathlib import Path
+import gc
 
 # Configuração da página
 st.set_page_config(
@@ -24,8 +21,8 @@ class PatrimonioAnalyzer:
         self.data = None
         self.processed = False
     
-    def load_data_from_folder(self, folder_path='data'):
-        """Carrega automaticamente todos os CSVs de uma pasta"""
+    def load_data_from_folder(self, folder_path='data', use_chunks=True):
+        """Carrega automaticamente todos os CSVs de uma pasta com otimização de memória"""
         dataframes = []
         folder = Path(folder_path)
         
@@ -40,27 +37,60 @@ class PatrimonioAnalyzer:
             st.warning(f"⚠️ Nenhum arquivo CSV encontrado em '{folder_path}'")
             return False
         
-        st.info(f"📂 Carregando {len(csv_files)} arquivo(s) CSV da pasta '{folder_path}'...")
+        st.info(f"📂 Carregando {len(csv_files)} arquivo(s) CSV...")
         
-        for csv_file in csv_files:
+        # Progress bar
+        progress_bar = st.progress(0)
+        
+        # Colunas essenciais para reduzir uso de memória
+        essential_columns = [
+            'Localização', 'Inventário', 'Denominação do Imobilizado',
+            'Vida', 'Valor Aquisição', 'Valor Contábil',
+            'Item Consumível Similar', 'Percentagem de Similaridade (%)',
+            'Data Incorporação', 'Justificativa de Reprova'
+        ]
+        
+        for idx, csv_file in enumerate(csv_files):
             try:
-                df = pd.read_csv(csv_file, encoding='utf-8')
+                # Carrega apenas colunas essenciais se existirem
+                df = pd.read_csv(
+                    csv_file, 
+                    encoding='utf-8',
+                    usecols=lambda col: col.strip() in essential_columns,
+                    low_memory=False
+                )
                 df['arquivo_origem'] = csv_file.name
                 dataframes.append(df)
-                st.success(f"✓ {csv_file.name}: {len(df)} registros carregados")
+                
+                progress_bar.progress((idx + 1) / len(csv_files))
+                
             except UnicodeDecodeError:
                 try:
-                    df = pd.read_csv(csv_file, encoding='latin-1')
+                    df = pd.read_csv(
+                        csv_file, 
+                        encoding='latin-1',
+                        usecols=lambda col: col.strip() in essential_columns,
+                        low_memory=False
+                    )
                     df['arquivo_origem'] = csv_file.name
                     dataframes.append(df)
-                    st.success(f"✓ {csv_file.name}: {len(df)} registros carregados (latin-1)")
+                    progress_bar.progress((idx + 1) / len(csv_files))
                 except Exception as e:
                     st.error(f"✗ Erro ao carregar {csv_file.name}: {str(e)}")
             except Exception as e:
                 st.error(f"✗ Erro ao carregar {csv_file.name}: {str(e)}")
         
+        progress_bar.empty()
+        
         if dataframes:
+            st.info("🔄 Consolidando dados...")
             self.data = pd.concat(dataframes, ignore_index=True)
+            
+            # Libera memória
+            del dataframes
+            gc.collect()
+            
+            st.success(f"✓ {len(self.data):,} registros carregados!")
             return True
         return False
     
@@ -68,17 +98,30 @@ class PatrimonioAnalyzer:
         """Carrega dados dos arquivos CSV enviados via upload"""
         dataframes = []
         
+        essential_columns = [
+            'Localização', 'Inventário', 'Denominação do Imobilizado',
+            'Vida', 'Valor Aquisição', 'Valor Contábil',
+            'Item Consumível Similar', 'Percentagem de Similaridade (%)',
+            'Data Incorporação', 'Justificativa de Reprova'
+        ]
+        
         for uploaded_file in uploaded_files:
             try:
-                df = pd.read_csv(uploaded_file, encoding='utf-8')
+                df = pd.read_csv(
+                    uploaded_file, 
+                    encoding='utf-8',
+                    usecols=lambda col: col.strip() in essential_columns,
+                    low_memory=False
+                )
                 df['arquivo_origem'] = uploaded_file.name
                 dataframes.append(df)
-                st.success(f"✓ {uploaded_file.name}: {len(df)} registros carregados")
             except Exception as e:
                 st.error(f"✗ Erro ao carregar {uploaded_file.name}: {str(e)}")
         
         if dataframes:
             self.data = pd.concat(dataframes, ignore_index=True)
+            del dataframes
+            gc.collect()
             return True
         return False
     
@@ -86,13 +129,24 @@ class PatrimonioAnalyzer:
         """Carrega dados de URLs (GitHub, Google Drive, etc)"""
         dataframes = []
         
+        essential_columns = [
+            'Localização', 'Inventário', 'Denominação do Imobilizado',
+            'Vida', 'Valor Aquisição', 'Valor Contábil',
+            'Item Consumível Similar', 'Percentagem de Similaridade (%)',
+            'Data Incorporação', 'Justificativa de Reprova'
+        ]
+        
         for url in urls:
             try:
                 if 'drive.google.com' in url:
                     file_id = url.split('/d/')[1].split('/')[0]
                     url = f'https://drive.google.com/uc?id={file_id}'
                 
-                df = pd.read_csv(url)
+                df = pd.read_csv(
+                    url,
+                    usecols=lambda col: col.strip() in essential_columns,
+                    low_memory=False
+                )
                 df['arquivo_origem'] = f"URL_{len(dataframes)+1}"
                 dataframes.append(df)
                 st.success(f"✓ URL {len(dataframes)}: {len(df)} registros carregados")
@@ -101,51 +155,77 @@ class PatrimonioAnalyzer:
         
         if dataframes:
             self.data = pd.concat(dataframes, ignore_index=True)
+            del dataframes
+            gc.collect()
             return True
         return False
     
     def preprocess_data(self):
-        """Preprocessa os dados"""
+        """Preprocessa os dados com otimização de memória"""
         if self.data is None:
             return False
         
+        st.info("🔧 Processando dados...")
+        
         self.data.columns = self.data.columns.str.strip()
         
+        # Conversão de tipos para economizar memória
         if 'Data Incorporação' in self.data.columns:
-            self.data['Data Incorporação'] = pd.to_datetime(self.data['Data Incorporação'], errors='coerce')
-            self.data['Ano Incorporação'] = self.data['Data Incorporação'].dt.year
-            # Calcula idade dos itens
-            self.data['Idade_Item'] = 2025 - self.data['Ano Incorporação']
+            self.data['Data Incorporação'] = pd.to_datetime(
+                self.data['Data Incorporação'], 
+                errors='coerce',
+                format='mixed'
+            )
+            self.data['Ano Incorporação'] = self.data['Data Incorporação'].dt.year.astype('Int16')
+            self.data['Idade_Item'] = (2025 - self.data['Ano Incorporação']).astype('Int16')
+            
+            # Remove coluna de data completa para economizar memória
+            self.data.drop('Data Incorporação', axis=1, inplace=True)
         
         if 'Percentagem de Similaridade (%)' in self.data.columns:
             self.data['Similaridade_Num'] = pd.to_numeric(
                 self.data['Percentagem de Similaridade (%)'].str.replace('%', ''), 
                 errors='coerce'
-            )
+            ).astype('float32')
         
         if 'Valor Aquisição' in self.data.columns:
             self.data['Valor_Aquisicao_Num'] = pd.to_numeric(
                 self.data['Valor Aquisição'].str.replace('R$', '').str.replace('.', '').str.replace(',', '.').str.strip(),
                 errors='coerce'
-            )
+            ).astype('float32')
         
         if 'Valor Contábil' in self.data.columns:
             self.data['Valor_Contabil_Num'] = pd.to_numeric(
                 self.data['Valor Contábil'].str.replace('R$', '').str.replace('.', '').str.replace(',', '.').str.strip(),
                 errors='coerce'
-            )
+            ).astype('float32')
         
         if 'Vida' in self.data.columns:
-            self.data['Vida_Num'] = pd.to_numeric(self.data['Vida'], errors='coerce')
+            self.data['Vida_Num'] = pd.to_numeric(self.data['Vida'], errors='coerce').astype('Int16')
         
         if 'Justificativa de Reprova' in self.data.columns:
-            self.data['Decisao'] = self.data['Justificativa de Reprova'].apply(self._categorizar_decisao)
-            self.data['Categoria_Similaridade'] = self.data['Similaridade_Num'].apply(self._categorizar_similaridade)
+            self.data['Decisao'] = self.data['Justificativa de Reprova'].apply(
+                self._categorizar_decisao
+            ).astype('category')
+            
+            self.data['Categoria_Similaridade'] = self.data['Similaridade_Num'].apply(
+                self._categorizar_similaridade
+            ).astype('category')
         
         if 'Localização' in self.data.columns:
-            self.data['Regiao'] = self.data['Localização'].apply(self._extrair_regiao)
+            self.data['Regiao'] = self.data['Localização'].apply(
+                self._extrair_regiao
+            ).astype('category')
         
+        # Converte colunas de texto para category para economizar memória
+        text_columns = ['arquivo_origem', 'Inventário']
+        for col in text_columns:
+            if col in self.data.columns:
+                self.data[col] = self.data[col].astype('category')
+        
+        gc.collect()
         self.processed = True
+        st.success("✓ Processamento concluído!")
         return True
     
     def _categorizar_decisao(self, justificativa):
@@ -182,13 +262,14 @@ class PatrimonioAnalyzer:
         
         return str(localizacao).strip()
     
-    def get_filtered_data(self, regiao_filter=None, decisao_filter=None, 
+    @st.cache_data(ttl=3600)
+    def get_filtered_data(_self, regiao_filter=None, decisao_filter=None, 
                          ano_min=None, ano_max=None, similaridade_min=None):
-        """Retorna dados filtrados"""
-        if not self.processed:
+        """Retorna dados filtrados com cache"""
+        if not _self.processed:
             return pd.DataFrame()
         
-        filtered = self.data.copy()
+        filtered = _self.data.copy()
         
         if regiao_filter and regiao_filter != "Todas":
             filtered = filtered[filtered['Regiao'] == regiao_filter]
@@ -207,6 +288,7 @@ class PatrimonioAnalyzer:
         
         return filtered
 
+@st.cache_data
 def create_decision_pie_chart(data):
     """Gráfico de pizza das decisões"""
     decisoes = data['Decisao'].value_counts()
@@ -221,6 +303,7 @@ def create_decision_pie_chart(data):
     fig.update_traces(textposition='inside', textinfo='percent+label')
     return fig
 
+@st.cache_data
 def create_similarity_histogram(data):
     """Histograma de similaridade"""
     fig = px.histogram(
@@ -234,6 +317,7 @@ def create_similarity_histogram(data):
     fig.update_layout(showlegend=False)
     return fig
 
+@st.cache_data
 def create_regional_bar_chart(data):
     """Gráfico de barras por localização"""
     localizacao_counts = data['Regiao'].value_counts()
@@ -251,6 +335,7 @@ def create_regional_bar_chart(data):
     )
     return fig
 
+@st.cache_data
 def create_similarity_box_plot(data):
     """Box plot de similaridade por decisão"""
     fig = px.box(
@@ -263,6 +348,7 @@ def create_similarity_box_plot(data):
     
     return fig
 
+@st.cache_data
 def create_timeline_chart(data):
     """Gráfico temporal"""
     timeline = data.groupby(['Ano Incorporação', 'Decisao']).size().unstack(fill_value=0)
@@ -304,8 +390,6 @@ def create_strategic_metrics(data):
     manter = decisoes.get('MANTER', 0)
     
     similaridade_stats = data['Similaridade_Num'].describe()
-    
-    # Calcula idade média dos itens
     idade_media = data['Idade_Item'].mean() if 'Idade_Item' in data.columns else 0
     
     metrics = {
@@ -334,7 +418,15 @@ def export_to_excel(data):
     output = BytesIO()
     
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-        data.to_excel(writer, sheet_name='Dados_Completos', index=False)
+        # Limita exportação para evitar problemas de memória
+        sample_size = min(len(data), 100000)
+        if len(data) > sample_size:
+            st.warning(f"⚠️ Exportando apenas {sample_size:,} registros de {len(data):,} para evitar problemas de memória")
+            data_to_export = data.sample(n=sample_size)
+        else:
+            data_to_export = data
+        
+        data_to_export.to_excel(writer, sheet_name='Dados_Completos', index=False)
         
         decisao_summary = data.groupby('Decisao').agg({
             'Similaridade_Num': ['count', 'mean', 'min', 'max'],
@@ -378,6 +470,9 @@ def main():
     st.title("📊 Sistema de Análise de Patrimônio")
     st.markdown("---")
     
+    # Aviso de recursos
+    st.info("💡 **Otimizado para grande volume de dados** - Carregando apenas colunas essenciais para melhor performance")
+    
     if 'analyzer' not in st.session_state:
         st.session_state.analyzer = PatrimonioAnalyzer()
     
@@ -403,7 +498,7 @@ def main():
                 with st.spinner("Carregando arquivos..."):
                     if analyzer.load_data_from_folder(folder_path):
                         if analyzer.preprocess_data():
-                            st.success(f"✓ {len(analyzer.data)} registros carregados!")
+                            st.success(f"✓ Pronto!")
                         else:
                             st.error("Erro no processamento dos dados")
             
@@ -411,7 +506,6 @@ def main():
                 with st.spinner("Carregando dados automaticamente..."):
                     if analyzer.load_data_from_folder(folder_path):
                         if analyzer.preprocess_data():
-                            st.success(f"✓ {len(analyzer.data)} registros carregados automaticamente!")
                             st.session_state.auto_loaded = True
         
         elif load_mode == "📤 Upload Manual":
@@ -419,7 +513,7 @@ def main():
                 "Selecione os arquivos CSV",
                 type=['csv'],
                 accept_multiple_files=True,
-                help="Você pode selecionar até 12 arquivos CSV"
+                help="Você pode selecionar múltiplos arquivos CSV"
             )
             
             if uploaded_files:
@@ -427,7 +521,7 @@ def main():
                     with st.spinner("Carregando arquivos..."):
                         if analyzer.load_data_from_upload(uploaded_files):
                             if analyzer.preprocess_data():
-                                st.success(f"✓ {len(analyzer.data)} registros carregados!")
+                                st.success(f"✓ {len(analyzer.data):,} registros carregados!")
                             else:
                                 st.error("Erro no processamento dos dados")
         
@@ -445,7 +539,7 @@ def main():
                     with st.spinner("Baixando arquivos..."):
                         if analyzer.load_data_from_url(urls):
                             if analyzer.preprocess_data():
-                                st.success(f"✓ {len(analyzer.data)} registros carregados!")
+                                st.success(f"✓ {len(analyzer.data):,} registros carregados!")
                             else:
                                 st.error("Erro no processamento dos dados")
         
@@ -458,27 +552,6 @@ def main():
     
     if not analyzer.processed:
         st.info("👆 Configure o modo de carregamento na barra lateral para começar")
-        
-        with st.expander("📖 Como usar cada modo"):
-            st.markdown("""
-            ### 🗂️ Pasta Local (Auto)
-            - **Para Streamlit Cloud**: Crie uma pasta `data/` no seu repositório
-            - Coloque seus arquivos CSV dentro dessa pasta
-            - Os dados serão carregados automaticamente no deploy
-            
-            ### 📤 Upload Manual
-            - Use para testes locais ou dados temporários
-            - Arraste e solte seus CSVs
-            
-            ### 🔗 URLs Remotas
-            - **GitHub**: Use URL raw (ex: `https://raw.githubusercontent.com/user/repo/main/data.csv`)
-            - **Google Drive**: Compartilhe o arquivo publicamente e use o link
-            - **Outros**: Qualquer URL pública de CSV
-            
-            ### 🎯 Demonstração
-            - Gera 1000 registros de exemplo para testar a aplicação
-            """)
-        
         return
     
     with st.sidebar:
@@ -519,41 +592,21 @@ def main():
         col1, col2, col3, col4, col5 = st.columns(5)
         
         with col1:
-            st.metric(
-                "Total de Itens",
-                f"{metrics['total_itens']:,}",
-                help="Número total de itens na análise"
-            )
+            st.metric("Total de Itens", f"{metrics['total_itens']:,}")
         
         with col2:
-            st.metric(
-                "Para Reclassificar",
-                f"{metrics['reclassificar']:,}",
-                f"{metrics['percentual_reclassificar']:.1f}%",
-                help="Itens recomendados para reclassificação"
-            )
+            st.metric("Para Reclassificar", f"{metrics['reclassificar']:,}",
+                     f"{metrics['percentual_reclassificar']:.1f}%")
         
         with col3:
-            st.metric(
-                "Para Avaliar",
-                f"{metrics['avaliar']:,}",
-                f"{metrics['percentual_avaliar']:.1f}%",
-                help="Itens que necessitam avaliação adicional"
-            )
+            st.metric("Para Avaliar", f"{metrics['avaliar']:,}",
+                     f"{metrics['percentual_avaliar']:.1f}%")
         
         with col4:
-            st.metric(
-                "Similaridade Média",
-                f"{metrics['similaridade_media']:.1f}%",
-                help="Percentual médio de similaridade com consumíveis"
-            )
+            st.metric("Similaridade Média", f"{metrics['similaridade_media']:.1f}%")
         
         with col5:
-            st.metric(
-                "Idade Média",
-                f"{metrics['idade_media']:.1f} anos",
-                help="Idade média dos itens patrimoniais (2025 - Ano de Incorporação)"
-            )
+            st.metric("Idade Média", f"{metrics['idade_media']:.1f} anos")
     
     tab1, tab2, tab3, tab4 = st.tabs(["📊 Visão Geral", "🔍 Análise Detalhada", "🏢 Análise por Localização", "📋 Dados e Export"])
     
@@ -582,39 +635,25 @@ def main():
         fig_timeline = create_timeline_chart(filtered_data)
         st.plotly_chart(fig_timeline, use_container_width=True)
         
-        # Análise de Idade por Decisão
         st.subheader("📅 Análise de Idade dos Itens")
         
         col1, col2, col3 = st.columns(3)
         
         with col1:
             if 'Idade_Item' in filtered_data.columns:
-                idade_reclassificar = filtered_data[filtered_data['Decisao'] == 'RECLASSIFICAR']['Idade_Item'].mean()
-                st.metric(
-                    "Idade Média - RECLASSIFICAR",
-                    f"{idade_reclassificar:.1f} anos",
-                    help="Idade média dos itens para reclassificar"
-                )
+                idade_reclas = filtered_data[filtered_data['Decisao'] == 'RECLASSIFICAR']['Idade_Item'].mean()
+                st.metric("Idade Média - RECLASSIFICAR", f"{idade_reclas:.1f} anos")
         
         with col2:
             if 'Idade_Item' in filtered_data.columns:
                 idade_avaliar = filtered_data[filtered_data['Decisao'] == 'AVALIAR']['Idade_Item'].mean()
-                st.metric(
-                    "Idade Média - AVALIAR",
-                    f"{idade_avaliar:.1f} anos",
-                    help="Idade média dos itens para avaliar"
-                )
+                st.metric("Idade Média - AVALIAR", f"{idade_avaliar:.1f} anos")
         
         with col3:
             if 'Idade_Item' in filtered_data.columns:
                 idade_manter = filtered_data[filtered_data['Decisao'] == 'MANTER']['Idade_Item'].mean()
-                st.metric(
-                    "Idade Média - MANTER",
-                    f"{idade_manter:.1f} anos",
-                    help="Idade média dos itens para manter"
-                )
+                st.metric("Idade Média - MANTER", f"{idade_manter:.1f} anos")
         
-        # Box plot de idade por decisão
         if 'Idade_Item' in filtered_data.columns:
             fig_idade = px.box(
                 filtered_data,
@@ -626,39 +665,11 @@ def main():
                 color_discrete_sequence=['#FF6B6B', '#4ECDC4', '#45B7D1', '#96CEB4']
             )
             st.plotly_chart(fig_idade, use_container_width=True)
-        
-        st.subheader("⚠️ Itens de Alta Prioridade")
-        
-        alta_similaridade = filtered_data[filtered_data['Similaridade_Num'] >= 70]
-        
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.info(f"**{len(alta_similaridade):,} itens** com similaridade ≥ 70%")
-            
-            if len(alta_similaridade) > 0:
-                top_regioes = alta_similaridade['Regiao'].value_counts().head()
-                st.write("**Localizações com mais itens de alta similaridade:**")
-                for localizacao, count in top_regioes.items():
-                    st.write(f"• {localizacao}: {count} itens")
-        
-        with col2:
-            reclassificacao_imediata = filtered_data[filtered_data['Decisao'] == 'RECLASSIFICAR']
-            st.warning(f"**{len(reclassificacao_imediata):,} itens** para reclassificação imediata")
-            
-            if len(reclassificacao_imediata) > 0:
-                similaridade_media = reclassificacao_imediata['Similaridade_Num'].mean()
-                st.write(f"**Similaridade média:** {similaridade_media:.1f}%")
-                if 'Idade_Item' in reclassificacao_imediata.columns:
-                    idade_media_reclas = reclassificacao_imediata['Idade_Item'].mean()
-                    st.write(f"**Idade média:** {idade_media_reclas:.1f} anos")
     
     with tab3:
         st.subheader("Análise por Localização")
         
         if not regional_analysis.empty:
-            st.write("**Resumo por Localização:**")
-            
             regional_display = regional_analysis.copy()
             regional_display['Eficiência_Reclassificação'] = (
                 regional_display['Itens_Reclassificar'] / 
@@ -687,7 +698,6 @@ def main():
     with tab4:
         st.subheader("Dados e Exportação")
         
-        # Diagnóstico de Idade
         with st.expander("🔍 Diagnóstico de Idade dos Itens"):
             if 'Ano Incorporação' in filtered_data.columns and 'Idade_Item' in filtered_data.columns:
                 col1, col2, col3 = st.columns(3)
@@ -715,13 +725,12 @@ def main():
                     
                     st.metric("Total de Registros", f"{total_registros:,}")
                     st.metric("Com Data", f"{registros_com_data:,}")
-                    st.metric("Sem Data", f"{registros_sem_data:,}", 
-                             delta=f"{(registros_sem_data/total_registros*100):.1f}%" if total_registros > 0 else "0%")
+                    st.metric("Sem Data", f"{registros_sem_data:,}")
                 
-                # Distribuição por década
                 st.write("**Distribuição por Década de Incorporação:**")
-                filtered_data['Decada'] = (filtered_data['Ano Incorporação'] // 10 * 10).astype('Int64')
-                decada_counts = filtered_data['Decada'].value_counts().sort_index()
+                filtered_data_copy = filtered_data.copy()
+                filtered_data_copy['Decada'] = (filtered_data_copy['Ano Incorporação'] // 10 * 10).astype('Int64')
+                decada_counts = filtered_data_copy['Decada'].value_counts().sort_index()
                 
                 fig_decada = px.bar(
                     x=decada_counts.index.astype(str),
@@ -733,14 +742,22 @@ def main():
         
         st.write(f"**Mostrando {len(filtered_data):,} registros filtrados:**")
         
+        # Limita visualização para evitar problemas de performance
+        max_display = 10000
+        if len(filtered_data) > max_display:
+            st.warning(f"⚠️ Mostrando apenas {max_display:,} registros de {len(filtered_data):,} para melhor performance")
+            display_data = filtered_data.head(max_display)
+        else:
+            display_data = filtered_data
+        
         show_columns = st.multiselect(
             "Selecione as colunas para exibir:",
-            filtered_data.columns.tolist(),
+            display_data.columns.tolist(),
             default=['Localização', 'Inventário', 'Denominação do Imobilizado', 'Item Consumível Similar', 'Decisao']
         )
         
         if show_columns:
-            st.dataframe(filtered_data[show_columns])
+            st.dataframe(display_data[show_columns], height=400)
         
         st.subheader("💾 Exportar Dados")
         
@@ -766,6 +783,780 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+
+
+
+
+# import streamlit as st
+# import pandas as pd
+# import numpy as np
+# import plotly.express as px
+# import plotly.graph_objects as go
+# from plotly.subplots import make_subplots
+# from datetime import datetime, date
+# import re
+# from io import BytesIO
+# import base64
+# import os
+# from pathlib import Path
+
+# # Configuração da página
+# st.set_page_config(
+#     page_title="Análise de Patrimônio",
+#     page_icon="📊",
+#     layout="wide",
+#     initial_sidebar_state="expanded"
+# )
+
+# class PatrimonioAnalyzer:
+#     def __init__(self):
+#         self.data = None
+#         self.processed = False
+    
+#     def load_data_from_folder(self, folder_path='data'):
+#         """Carrega automaticamente todos os CSVs de uma pasta"""
+#         dataframes = []
+#         folder = Path(folder_path)
+        
+#         if not folder.exists():
+#             st.warning(f"⚠️ Pasta '{folder_path}' não encontrada. Criando pasta...")
+#             folder.mkdir(exist_ok=True)
+#             return False
+        
+#         csv_files = list(folder.glob('*.csv'))
+        
+#         if not csv_files:
+#             st.warning(f"⚠️ Nenhum arquivo CSV encontrado em '{folder_path}'")
+#             return False
+        
+#         st.info(f"📂 Carregando {len(csv_files)} arquivo(s) CSV da pasta '{folder_path}'...")
+        
+#         for csv_file in csv_files:
+#             try:
+#                 df = pd.read_csv(csv_file, encoding='utf-8')
+#                 df['arquivo_origem'] = csv_file.name
+#                 dataframes.append(df)
+#                 st.success(f"✓ {csv_file.name}: {len(df)} registros carregados")
+#             except UnicodeDecodeError:
+#                 try:
+#                     df = pd.read_csv(csv_file, encoding='latin-1')
+#                     df['arquivo_origem'] = csv_file.name
+#                     dataframes.append(df)
+#                     st.success(f"✓ {csv_file.name}: {len(df)} registros carregados (latin-1)")
+#                 except Exception as e:
+#                     st.error(f"✗ Erro ao carregar {csv_file.name}: {str(e)}")
+#             except Exception as e:
+#                 st.error(f"✗ Erro ao carregar {csv_file.name}: {str(e)}")
+        
+#         if dataframes:
+#             self.data = pd.concat(dataframes, ignore_index=True)
+#             return True
+#         return False
+    
+#     def load_data_from_upload(self, uploaded_files):
+#         """Carrega dados dos arquivos CSV enviados via upload"""
+#         dataframes = []
+        
+#         for uploaded_file in uploaded_files:
+#             try:
+#                 df = pd.read_csv(uploaded_file, encoding='utf-8')
+#                 df['arquivo_origem'] = uploaded_file.name
+#                 dataframes.append(df)
+#                 st.success(f"✓ {uploaded_file.name}: {len(df)} registros carregados")
+#             except Exception as e:
+#                 st.error(f"✗ Erro ao carregar {uploaded_file.name}: {str(e)}")
+        
+#         if dataframes:
+#             self.data = pd.concat(dataframes, ignore_index=True)
+#             return True
+#         return False
+    
+#     def load_data_from_url(self, urls):
+#         """Carrega dados de URLs (GitHub, Google Drive, etc)"""
+#         dataframes = []
+        
+#         for url in urls:
+#             try:
+#                 if 'drive.google.com' in url:
+#                     file_id = url.split('/d/')[1].split('/')[0]
+#                     url = f'https://drive.google.com/uc?id={file_id}'
+                
+#                 df = pd.read_csv(url)
+#                 df['arquivo_origem'] = f"URL_{len(dataframes)+1}"
+#                 dataframes.append(df)
+#                 st.success(f"✓ URL {len(dataframes)}: {len(df)} registros carregados")
+#             except Exception as e:
+#                 st.error(f"✗ Erro ao carregar URL: {str(e)}")
+        
+#         if dataframes:
+#             self.data = pd.concat(dataframes, ignore_index=True)
+#             return True
+#         return False
+    
+#     def preprocess_data(self):
+#         """Preprocessa os dados"""
+#         if self.data is None:
+#             return False
+        
+#         self.data.columns = self.data.columns.str.strip()
+        
+#         if 'Data Incorporação' in self.data.columns:
+#             self.data['Data Incorporação'] = pd.to_datetime(self.data['Data Incorporação'], errors='coerce')
+#             self.data['Ano Incorporação'] = self.data['Data Incorporação'].dt.year
+#             # Calcula idade dos itens
+#             self.data['Idade_Item'] = 2025 - self.data['Ano Incorporação']
+        
+#         if 'Percentagem de Similaridade (%)' in self.data.columns:
+#             self.data['Similaridade_Num'] = pd.to_numeric(
+#                 self.data['Percentagem de Similaridade (%)'].str.replace('%', ''), 
+#                 errors='coerce'
+#             )
+        
+#         if 'Valor Aquisição' in self.data.columns:
+#             self.data['Valor_Aquisicao_Num'] = pd.to_numeric(
+#                 self.data['Valor Aquisição'].str.replace('R$', '').str.replace('.', '').str.replace(',', '.').str.strip(),
+#                 errors='coerce'
+#             )
+        
+#         if 'Valor Contábil' in self.data.columns:
+#             self.data['Valor_Contabil_Num'] = pd.to_numeric(
+#                 self.data['Valor Contábil'].str.replace('R$', '').str.replace('.', '').str.replace(',', '.').str.strip(),
+#                 errors='coerce'
+#             )
+        
+#         if 'Vida' in self.data.columns:
+#             self.data['Vida_Num'] = pd.to_numeric(self.data['Vida'], errors='coerce')
+        
+#         if 'Justificativa de Reprova' in self.data.columns:
+#             self.data['Decisao'] = self.data['Justificativa de Reprova'].apply(self._categorizar_decisao)
+#             self.data['Categoria_Similaridade'] = self.data['Similaridade_Num'].apply(self._categorizar_similaridade)
+        
+#         if 'Localização' in self.data.columns:
+#             self.data['Regiao'] = self.data['Localização'].apply(self._extrair_regiao)
+        
+#         self.processed = True
+#         return True
+    
+#     def _categorizar_decisao(self, justificativa):
+#         if pd.isna(justificativa):
+#             return "Sem Categoria"
+        
+#         justificativa = str(justificativa).upper()
+        
+#         if "RECLASSIFICAR" in justificativa:
+#             return "RECLASSIFICAR"
+#         elif "AVALIAR" in justificativa:
+#             return "AVALIAR"
+#         elif "MANTER" in justificativa:
+#             return "MANTER"
+#         else:
+#             return "OUTROS"
+    
+#     def _categorizar_similaridade(self, similaridade):
+#         if pd.isna(similaridade):
+#             return "Sem Dados"
+        
+#         if similaridade >= 70:
+#             return "Muito Alta (≥70%)"
+#         elif similaridade >= 50:
+#             return "Alta (50-69%)"
+#         elif similaridade >= 35:
+#             return "Moderada (35-49%)"
+#         else:
+#             return "Baixa (<35%)"
+    
+#     def _extrair_regiao(self, localizacao):
+#         if pd.isna(localizacao):
+#             return "Não Informado"
+        
+#         return str(localizacao).strip()
+    
+#     def get_filtered_data(self, regiao_filter=None, decisao_filter=None, 
+#                          ano_min=None, ano_max=None, similaridade_min=None):
+#         """Retorna dados filtrados"""
+#         if not self.processed:
+#             return pd.DataFrame()
+        
+#         filtered = self.data.copy()
+        
+#         if regiao_filter and regiao_filter != "Todas":
+#             filtered = filtered[filtered['Regiao'] == regiao_filter]
+        
+#         if decisao_filter and decisao_filter != "Todas":
+#             filtered = filtered[filtered['Decisao'] == decisao_filter]
+        
+#         if ano_min is not None:
+#             filtered = filtered[filtered['Ano Incorporação'] >= ano_min]
+        
+#         if ano_max is not None:
+#             filtered = filtered[filtered['Ano Incorporação'] <= ano_max]
+        
+#         if similaridade_min is not None:
+#             filtered = filtered[filtered['Similaridade_Num'] >= similaridade_min]
+        
+#         return filtered
+
+# def create_decision_pie_chart(data):
+#     """Gráfico de pizza das decisões"""
+#     decisoes = data['Decisao'].value_counts()
+    
+#     fig = px.pie(
+#         values=decisoes.values, 
+#         names=decisoes.index,
+#         title="Distribuição de Decisões",
+#         color_discrete_sequence=['#FF6B6B', '#4ECDC4', '#45B7D1', '#96CEB4']
+#     )
+    
+#     fig.update_traces(textposition='inside', textinfo='percent+label')
+#     return fig
+
+# def create_similarity_histogram(data):
+#     """Histograma de similaridade"""
+#     fig = px.histogram(
+#         data, 
+#         x='Similaridade_Num',
+#         nbins=20,
+#         title="Distribuição de Similaridade (%)",
+#         labels={'Similaridade_Num': 'Similaridade (%)', 'count': 'Quantidade'}
+#     )
+    
+#     fig.update_layout(showlegend=False)
+#     return fig
+
+# def create_regional_bar_chart(data):
+#     """Gráfico de barras por localização"""
+#     localizacao_counts = data['Regiao'].value_counts()
+    
+#     fig = px.bar(
+#         x=localizacao_counts.index,
+#         y=localizacao_counts.values,
+#         title="Itens por Localização",
+#         labels={'x': 'Localização', 'y': 'Quantidade'}
+#     )
+    
+#     fig.update_layout(
+#         showlegend=False,
+#         xaxis=dict(tickangle=45)
+#     )
+#     return fig
+
+# def create_similarity_box_plot(data):
+#     """Box plot de similaridade por decisão"""
+#     fig = px.box(
+#         data,
+#         x='Decisao',
+#         y='Similaridade_Num',
+#         title="Similaridade por Tipo de Decisão",
+#         labels={'Similaridade_Num': 'Similaridade (%)', 'Decisao': 'Decisão'}
+#     )
+    
+#     return fig
+
+# def create_timeline_chart(data):
+#     """Gráfico temporal"""
+#     timeline = data.groupby(['Ano Incorporação', 'Decisao']).size().unstack(fill_value=0)
+    
+#     fig = go.Figure()
+    
+#     colors = ['#FF6B6B', '#4ECDC4', '#45B7D1', '#96CEB4']
+    
+#     for i, decisao in enumerate(timeline.columns):
+#         fig.add_trace(
+#             go.Scatter(
+#                 x=timeline.index,
+#                 y=timeline[decisao],
+#                 mode='lines+markers',
+#                 name=decisao,
+#                 line=dict(color=colors[i % len(colors)])
+#             )
+#         )
+    
+#     fig.update_layout(
+#         title="Timeline de Incorporações por Decisão",
+#         xaxis_title="Ano",
+#         yaxis_title="Quantidade",
+#         hovermode='x unified'
+#     )
+    
+#     return fig
+
+# def create_strategic_metrics(data):
+#     """Métricas estratégicas"""
+#     total_itens = len(data)
+    
+#     if total_itens == 0:
+#         return {}, {}
+    
+#     decisoes = data['Decisao'].value_counts()
+#     reclassificar = decisoes.get('RECLASSIFICAR', 0)
+#     avaliar = decisoes.get('AVALIAR', 0)
+#     manter = decisoes.get('MANTER', 0)
+    
+#     similaridade_stats = data['Similaridade_Num'].describe()
+    
+#     # Calcula idade média dos itens
+#     idade_media = data['Idade_Item'].mean() if 'Idade_Item' in data.columns else 0
+    
+#     metrics = {
+#         'total_itens': total_itens,
+#         'reclassificar': reclassificar,
+#         'avaliar': avaliar,
+#         'manter': manter,
+#         'percentual_reclassificar': (reclassificar / total_itens) * 100,
+#         'percentual_avaliar': (avaliar / total_itens) * 100,
+#         'similaridade_media': similaridade_stats.get('mean', 0),
+#         'alta_similaridade': len(data[data['Similaridade_Num'] >= 70]),
+#         'idade_media': idade_media
+#     }
+    
+#     regional_analysis = data.groupby('Regiao').agg({
+#         'Decisao': lambda x: (x == 'RECLASSIFICAR').sum(),
+#         'Similaridade_Num': 'mean'
+#     }).round(2)
+    
+#     regional_analysis.columns = ['Itens_Reclassificar', 'Similaridade_Media']
+    
+#     return metrics, regional_analysis
+
+# def export_to_excel(data):
+#     """Exporta dados para Excel"""
+#     output = BytesIO()
+    
+#     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+#         data.to_excel(writer, sheet_name='Dados_Completos', index=False)
+        
+#         decisao_summary = data.groupby('Decisao').agg({
+#             'Similaridade_Num': ['count', 'mean', 'min', 'max'],
+#             'Ano Incorporação': ['min', 'max']
+#         }).round(2)
+#         decisao_summary.to_excel(writer, sheet_name='Resumo_Decisoes')
+        
+#         regional_summary = data.groupby('Regiao').agg({
+#             'Decisao': lambda x: x.value_counts().to_dict(),
+#             'Similaridade_Num': ['count', 'mean']
+#         })
+#         regional_summary.to_excel(writer, sheet_name='Resumo_Regional')
+    
+#     return output.getvalue()
+
+# def create_demo_data():
+#     """Cria dados de demonstração"""
+#     np.random.seed(42)
+#     n_samples = 1000
+    
+#     sample_data = {
+#         'Localização': np.random.choice(['1.01 BRÁS', '1.02 VILA ALPINA', '2.01 SANTOS', 'SENAI SEDE', '3.01 TAUBATÉ'], n_samples),
+#         'Inventário': range(1000000, 1000000 + n_samples),
+#         'Denominação do Imobilizado': [f"EQUIPAMENTO TESTE {i}" for i in range(n_samples)],
+#         'Vida': np.random.choice([10, 15, 20, 25, 50], n_samples),
+#         'Valor Aquisição': [f"R$ {np.random.uniform(100, 50000):.2f}".replace('.', ',') for _ in range(n_samples)],
+#         'Valor Contábil': [f"R$ {np.random.uniform(0, 30000):.2f}".replace('.', ',') for _ in range(n_samples)],
+#         'Item Consumível Similar': [f"CONSUMÍVEL SIMILAR {i}" for i in range(n_samples)],
+#         'Percentagem de Similaridade (%)': [f"{np.random.uniform(20, 85):.1f}%" for _ in range(n_samples)],
+#         'Data Incorporação': pd.date_range('2010-01-01', '2025-01-01', periods=n_samples),
+#         'Justificativa de Reprova': np.random.choice([
+#             'RECLASSIFICAR: Alta similaridade (70%+)',
+#             'AVALIAR: Similaridade moderada (45%)',
+#             'MANTER: Similaridade baixa (25%)'
+#         ], n_samples, p=[0.25, 0.45, 0.3])
+#     }
+    
+#     return pd.DataFrame(sample_data)
+
+# def main():
+#     st.title("📊 Sistema de Análise de Patrimônio")
+#     st.markdown("---")
+    
+#     if 'analyzer' not in st.session_state:
+#         st.session_state.analyzer = PatrimonioAnalyzer()
+    
+#     analyzer = st.session_state.analyzer
+    
+#     with st.sidebar:
+#         st.header("⚙️ Configuração de Dados")
+        
+#         load_mode = st.radio(
+#             "Modo de Carregamento:",
+#             ["🗂️ Pasta Local (Auto)", "📤 Upload Manual", "🔗 URLs Remotas", "🎯 Demonstração"],
+#             help="Escolha como carregar os dados"
+#         )
+        
+#         st.markdown("---")
+        
+#         if load_mode == "🗂️ Pasta Local (Auto)":
+#             st.info("📂 Carregamento automático da pasta 'data/'")
+            
+#             folder_path = st.text_input("Caminho da pasta:", value="data")
+            
+#             if st.button("🔄 Carregar Dados"):
+#                 with st.spinner("Carregando arquivos..."):
+#                     if analyzer.load_data_from_folder(folder_path):
+#                         if analyzer.preprocess_data():
+#                             st.success(f"✓ {len(analyzer.data)} registros carregados!")
+#                         else:
+#                             st.error("Erro no processamento dos dados")
+            
+#             if not analyzer.processed and 'auto_loaded' not in st.session_state:
+#                 with st.spinner("Carregando dados automaticamente..."):
+#                     if analyzer.load_data_from_folder(folder_path):
+#                         if analyzer.preprocess_data():
+#                             st.success(f"✓ {len(analyzer.data)} registros carregados automaticamente!")
+#                             st.session_state.auto_loaded = True
+        
+#         elif load_mode == "📤 Upload Manual":
+#             uploaded_files = st.file_uploader(
+#                 "Selecione os arquivos CSV",
+#                 type=['csv'],
+#                 accept_multiple_files=True,
+#                 help="Você pode selecionar até 12 arquivos CSV"
+#             )
+            
+#             if uploaded_files:
+#                 if st.button("📥 Carregar Arquivos"):
+#                     with st.spinner("Carregando arquivos..."):
+#                         if analyzer.load_data_from_upload(uploaded_files):
+#                             if analyzer.preprocess_data():
+#                                 st.success(f"✓ {len(analyzer.data)} registros carregados!")
+#                             else:
+#                                 st.error("Erro no processamento dos dados")
+        
+#         elif load_mode == "🔗 URLs Remotas":
+#             st.info("💡 Suporta GitHub Raw, Google Drive público, etc.")
+            
+#             url_input = st.text_area(
+#                 "URLs (uma por linha):",
+#                 help="Cole as URLs dos arquivos CSV, uma por linha"
+#             )
+            
+#             if st.button("🌐 Carregar de URLs"):
+#                 urls = [url.strip() for url in url_input.split('\n') if url.strip()]
+#                 if urls:
+#                     with st.spinner("Baixando arquivos..."):
+#                         if analyzer.load_data_from_url(urls):
+#                             if analyzer.preprocess_data():
+#                                 st.success(f"✓ {len(analyzer.data)} registros carregados!")
+#                             else:
+#                                 st.error("Erro no processamento dos dados")
+        
+#         else:
+#             if st.button("🎯 Gerar Dados de Demonstração"):
+#                 with st.spinner("Criando dados de demonstração..."):
+#                     analyzer.data = create_demo_data()
+#                     analyzer.preprocess_data()
+#                     st.success("✓ Dados de demonstração carregados!")
+    
+#     if not analyzer.processed:
+#         st.info("👆 Configure o modo de carregamento na barra lateral para começar")
+        
+#         with st.expander("📖 Como usar cada modo"):
+#             st.markdown("""
+#             ### 🗂️ Pasta Local (Auto)
+#             - **Para Streamlit Cloud**: Crie uma pasta `data/` no seu repositório
+#             - Coloque seus arquivos CSV dentro dessa pasta
+#             - Os dados serão carregados automaticamente no deploy
+            
+#             ### 📤 Upload Manual
+#             - Use para testes locais ou dados temporários
+#             - Arraste e solte seus CSVs
+            
+#             ### 🔗 URLs Remotas
+#             - **GitHub**: Use URL raw (ex: `https://raw.githubusercontent.com/user/repo/main/data.csv`)
+#             - **Google Drive**: Compartilhe o arquivo publicamente e use o link
+#             - **Outros**: Qualquer URL pública de CSV
+            
+#             ### 🎯 Demonstração
+#             - Gera 1000 registros de exemplo para testar a aplicação
+#             """)
+        
+#         return
+    
+#     with st.sidebar:
+#         st.markdown("---")
+#         st.header("🔧 Filtros")
+        
+#         localizacoes = ["Todas"] + sorted(analyzer.data['Regiao'].unique().tolist())
+#         regiao_filter = st.selectbox("Localização", localizacoes)
+        
+#         decisoes = ["Todas"] + sorted(analyzer.data['Decisao'].unique().tolist())
+#         decisao_filter = st.selectbox("Decisão", decisoes)
+        
+#         anos = analyzer.data['Ano Incorporação'].dropna()
+#         if len(anos) > 0:
+#             ano_min, ano_max = st.slider(
+#                 "Período de Incorporação",
+#                 int(anos.min()),
+#                 int(anos.max()),
+#                 (int(anos.min()), int(anos.max()))
+#             )
+#         else:
+#             ano_min, ano_max = None, None
+        
+#         similaridade_min = st.slider(
+#             "Similaridade Mínima (%)",
+#             0, 100, 0
+#         )
+        
+#         filtered_data = analyzer.get_filtered_data(
+#             regiao_filter, decisao_filter, ano_min, ano_max, similaridade_min
+#         )
+    
+#     st.header("📈 Resumo Executivo")
+    
+#     metrics, regional_analysis = create_strategic_metrics(filtered_data)
+    
+#     if metrics:
+#         col1, col2, col3, col4, col5 = st.columns(5)
+        
+#         with col1:
+#             st.metric(
+#                 "Total de Itens",
+#                 f"{metrics['total_itens']:,}",
+#                 help="Número total de itens na análise"
+#             )
+        
+#         with col2:
+#             st.metric(
+#                 "Para Reclassificar",
+#                 f"{metrics['reclassificar']:,}",
+#                 f"{metrics['percentual_reclassificar']:.1f}%",
+#                 help="Itens recomendados para reclassificação"
+#             )
+        
+#         with col3:
+#             st.metric(
+#                 "Para Avaliar",
+#                 f"{metrics['avaliar']:,}",
+#                 f"{metrics['percentual_avaliar']:.1f}%",
+#                 help="Itens que necessitam avaliação adicional"
+#             )
+        
+#         with col4:
+#             st.metric(
+#                 "Similaridade Média",
+#                 f"{metrics['similaridade_media']:.1f}%",
+#                 help="Percentual médio de similaridade com consumíveis"
+#             )
+        
+#         with col5:
+#             st.metric(
+#                 "Idade Média",
+#                 f"{metrics['idade_media']:.1f} anos",
+#                 help="Idade média dos itens patrimoniais (2025 - Ano de Incorporação)"
+#             )
+    
+#     tab1, tab2, tab3, tab4 = st.tabs(["📊 Visão Geral", "🔍 Análise Detalhada", "🏢 Análise por Localização", "📋 Dados e Export"])
+    
+#     with tab1:
+#         st.subheader("Visão Geral dos Dados")
+        
+#         col1, col2 = st.columns(2)
+        
+#         with col1:
+#             fig_pie = create_decision_pie_chart(filtered_data)
+#             st.plotly_chart(fig_pie, use_container_width=True)
+            
+#             fig_hist = create_similarity_histogram(filtered_data)
+#             st.plotly_chart(fig_hist, use_container_width=True)
+        
+#         with col2:
+#             fig_bar = create_regional_bar_chart(filtered_data)
+#             st.plotly_chart(fig_bar, use_container_width=True)
+            
+#             fig_box = create_similarity_box_plot(filtered_data)
+#             st.plotly_chart(fig_box, use_container_width=True)
+    
+#     with tab2:
+#         st.subheader("Análise Detalhada")
+        
+#         fig_timeline = create_timeline_chart(filtered_data)
+#         st.plotly_chart(fig_timeline, use_container_width=True)
+        
+#         # Análise de Idade por Decisão
+#         st.subheader("📅 Análise de Idade dos Itens")
+        
+#         col1, col2, col3 = st.columns(3)
+        
+#         with col1:
+#             if 'Idade_Item' in filtered_data.columns:
+#                 idade_reclassificar = filtered_data[filtered_data['Decisao'] == 'RECLASSIFICAR']['Idade_Item'].mean()
+#                 st.metric(
+#                     "Idade Média - RECLASSIFICAR",
+#                     f"{idade_reclassificar:.1f} anos",
+#                     help="Idade média dos itens para reclassificar"
+#                 )
+        
+#         with col2:
+#             if 'Idade_Item' in filtered_data.columns:
+#                 idade_avaliar = filtered_data[filtered_data['Decisao'] == 'AVALIAR']['Idade_Item'].mean()
+#                 st.metric(
+#                     "Idade Média - AVALIAR",
+#                     f"{idade_avaliar:.1f} anos",
+#                     help="Idade média dos itens para avaliar"
+#                 )
+        
+#         with col3:
+#             if 'Idade_Item' in filtered_data.columns:
+#                 idade_manter = filtered_data[filtered_data['Decisao'] == 'MANTER']['Idade_Item'].mean()
+#                 st.metric(
+#                     "Idade Média - MANTER",
+#                     f"{idade_manter:.1f} anos",
+#                     help="Idade média dos itens para manter"
+#                 )
+        
+#         # Box plot de idade por decisão
+#         if 'Idade_Item' in filtered_data.columns:
+#             fig_idade = px.box(
+#                 filtered_data,
+#                 x='Decisao',
+#                 y='Idade_Item',
+#                 title="Distribuição de Idade por Tipo de Decisão",
+#                 labels={'Idade_Item': 'Idade (anos)', 'Decisao': 'Decisão'},
+#                 color='Decisao',
+#                 color_discrete_sequence=['#FF6B6B', '#4ECDC4', '#45B7D1', '#96CEB4']
+#             )
+#             st.plotly_chart(fig_idade, use_container_width=True)
+        
+#         st.subheader("⚠️ Itens de Alta Prioridade")
+        
+#         alta_similaridade = filtered_data[filtered_data['Similaridade_Num'] >= 70]
+        
+#         col1, col2 = st.columns(2)
+        
+#         with col1:
+#             st.info(f"**{len(alta_similaridade):,} itens** com similaridade ≥ 70%")
+            
+#             if len(alta_similaridade) > 0:
+#                 top_regioes = alta_similaridade['Regiao'].value_counts().head()
+#                 st.write("**Localizações com mais itens de alta similaridade:**")
+#                 for localizacao, count in top_regioes.items():
+#                     st.write(f"• {localizacao}: {count} itens")
+        
+#         with col2:
+#             reclassificacao_imediata = filtered_data[filtered_data['Decisao'] == 'RECLASSIFICAR']
+#             st.warning(f"**{len(reclassificacao_imediata):,} itens** para reclassificação imediata")
+            
+#             if len(reclassificacao_imediata) > 0:
+#                 similaridade_media = reclassificacao_imediata['Similaridade_Num'].mean()
+#                 st.write(f"**Similaridade média:** {similaridade_media:.1f}%")
+#                 if 'Idade_Item' in reclassificacao_imediata.columns:
+#                     idade_media_reclas = reclassificacao_imediata['Idade_Item'].mean()
+#                     st.write(f"**Idade média:** {idade_media_reclas:.1f} anos")
+    
+#     with tab3:
+#         st.subheader("Análise por Localização")
+        
+#         if not regional_analysis.empty:
+#             st.write("**Resumo por Localização:**")
+            
+#             regional_display = regional_analysis.copy()
+#             regional_display['Eficiência_Reclassificação'] = (
+#                 regional_display['Itens_Reclassificar'] / 
+#                 filtered_data.groupby('Regiao').size()
+#             ) * 100
+            
+#             regional_display = regional_display.round(2)
+#             regional_display.columns = ['Itens p/ Reclassificar', 'Similaridade Média (%)', 'Eficiência (%)']
+            
+#             st.dataframe(regional_display.sort_values('Eficiência (%)', ascending=False))
+            
+#             fig = px.scatter(
+#                 x=regional_display['Similaridade Média (%)'],
+#                 y=regional_display['Eficiência (%)'],
+#                 size=regional_display['Itens p/ Reclassificar'],
+#                 hover_name=regional_display.index,
+#                 title="Eficiência por Localização: Similaridade vs % Reclassificação",
+#                 labels={
+#                     'x': 'Similaridade Média (%)',
+#                     'y': 'Eficiência na Reclassificação (%)'
+#                 }
+#             )
+            
+#             st.plotly_chart(fig, use_container_width=True)
+    
+#     with tab4:
+#         st.subheader("Dados e Exportação")
+        
+#         # Diagnóstico de Idade
+#         with st.expander("🔍 Diagnóstico de Idade dos Itens"):
+#             if 'Ano Incorporação' in filtered_data.columns and 'Idade_Item' in filtered_data.columns:
+#                 col1, col2, col3 = st.columns(3)
+                
+#                 with col1:
+#                     st.metric("Ano Médio de Incorporação", 
+#                              f"{filtered_data['Ano Incorporação'].mean():.0f}")
+#                     st.metric("Ano Mínimo", 
+#                              f"{filtered_data['Ano Incorporação'].min():.0f}")
+#                     st.metric("Ano Máximo", 
+#                              f"{filtered_data['Ano Incorporação'].max():.0f}")
+                
+#                 with col2:
+#                     st.metric("Idade Média Calculada", 
+#                              f"{filtered_data['Idade_Item'].mean():.1f} anos")
+#                     st.metric("Idade Mínima", 
+#                              f"{filtered_data['Idade_Item'].min():.0f} anos")
+#                     st.metric("Idade Máxima", 
+#                              f"{filtered_data['Idade_Item'].max():.0f} anos")
+                
+#                 with col3:
+#                     total_registros = len(filtered_data)
+#                     registros_com_data = filtered_data['Ano Incorporação'].notna().sum()
+#                     registros_sem_data = total_registros - registros_com_data
+                    
+#                     st.metric("Total de Registros", f"{total_registros:,}")
+#                     st.metric("Com Data", f"{registros_com_data:,}")
+#                     st.metric("Sem Data", f"{registros_sem_data:,}", 
+#                              delta=f"{(registros_sem_data/total_registros*100):.1f}%" if total_registros > 0 else "0%")
+                
+#                 # Distribuição por década
+#                 st.write("**Distribuição por Década de Incorporação:**")
+#                 filtered_data['Decada'] = (filtered_data['Ano Incorporação'] // 10 * 10).astype('Int64')
+#                 decada_counts = filtered_data['Decada'].value_counts().sort_index()
+                
+#                 fig_decada = px.bar(
+#                     x=decada_counts.index.astype(str),
+#                     y=decada_counts.values,
+#                     title="Quantidade de Itens por Década",
+#                     labels={'x': 'Década', 'y': 'Quantidade de Itens'}
+#                 )
+#                 st.plotly_chart(fig_decada, use_container_width=True)
+        
+#         st.write(f"**Mostrando {len(filtered_data):,} registros filtrados:**")
+        
+#         show_columns = st.multiselect(
+#             "Selecione as colunas para exibir:",
+#             filtered_data.columns.tolist(),
+#             default=['Localização', 'Inventário', 'Denominação do Imobilizado', 'Item Consumível Similar', 'Decisao']
+#         )
+        
+#         if show_columns:
+#             st.dataframe(filtered_data[show_columns])
+        
+#         st.subheader("💾 Exportar Dados")
+        
+#         col1, col2 = st.columns(2)
+        
+#         with col1:
+#             csv = filtered_data.to_csv(index=False)
+#             st.download_button(
+#                 label="📄 Baixar CSV",
+#                 data=csv,
+#                 file_name=f"patrimonio_filtrado_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+#                 mime="text/csv"
+#             )
+        
+#         with col2:
+#             excel_data = export_to_excel(filtered_data)
+#             st.download_button(
+#                 label="📊 Baixar Excel",
+#                 data=excel_data,
+#                 file_name=f"patrimonio_analise_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
+#                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+#             )
+
+# if __name__ == "__main__":
+#     main()
 
 
 

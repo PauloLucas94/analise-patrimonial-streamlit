@@ -4,9 +4,6 @@ __pycache__/
 *$py.class
 .Python
 
-# Streamlit
-.streamlit/
-
 # Data (se usar URLs)
 #data/*.csv
 !data/.gitkeep
