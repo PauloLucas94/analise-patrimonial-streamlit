@@ -25,7 +25,7 @@ DROPBOX_FILES = [
 
 # Escolha qual usar (descomente apenas uma opção)
 DATA_URLS = CSV_URLS
-# DATA_URLS = GOOGLE_DRIVE_FILES
+#DATA_URLS = GOOGLE_DRIVE_FILES
 # DATA_URLS = DROPBOX_FILES
 
 # Configurações adicionais
