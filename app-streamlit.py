@@ -4,6 +4,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime
 import numpy as np
+import re
 
 # Configuração da página
 st.set_page_config(
@@ -35,30 +36,73 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
+# Mapeamento de nomes de colunas corrompidos para nomes corretos
+COLUMN_MAPPING = {
+    'Localiza??????o': 'Localização',
+    'Invent???rio': 'Inventário',
+    'Denomina??????o do Imobilizado': 'Denominação do Imobilizado',
+    'Valor Aquisi??????o': 'Valor Aquisição',
+    'Valor Cont???bil': 'Valor Contábil',
+    'Item Consum???vel Similar': 'Item Consumível Similar',
+    'Ano Incorpora??????o': 'Ano Incorporação'
+}
+
+# Função para converter valores com vírgula para float
+def convert_to_float(value):
+    if pd.isna(value):
+        return 0.0
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        # Remove R$, espaços, e substitui vírgula por ponto
+        value = value.replace('R$', '').replace(' ', '').strip()
+        value = value.replace('.', '').replace(',', '.')
+        try:
+            return float(value)
+        except:
+            return 0.0
+    return 0.0
+
 # Função para carregar dados
 @st.cache_data
 def load_data():
-    # Ler o CSV com encoding apropriado
-    df = pd.read_csv('patrimonio_analise_final.csv', 
-                     sep=';', 
-                     encoding='cp1252',
-                     decimal=',')
-    
-    # Limpar nomes das colunas (remover espaços)
-    df.columns = df.columns.str.strip()
-    
-    # Converter valores numéricos se necessário
-    if 'Valor_Aquisicao_Num' in df.columns:
-        df['Valor_Aquisicao_Num'] = pd.to_numeric(df['Valor_Aquisicao_Num'], errors='coerce')
-    if 'Valor_Contabil_Num' in df.columns:
-        df['Valor_Contabil_Num'] = pd.to_numeric(df['Valor_Contabil_Num'], errors='coerce')
-    
-    return df
+    try:
+        # Ler o CSV
+        df = pd.read_csv('patrimonio_analise_final.csv', 
+                       sep=';', 
+                       encoding='utf-8',
+                       on_bad_lines='skip')
+        
+        # Renomear colunas corrompidas
+        df.columns = df.columns.str.strip()
+        df = df.rename(columns=COLUMN_MAPPING)
+        
+        # Converter valores numéricos
+        if 'Valor_Aquisicao_Num' in df.columns:
+            df['Valor_Aquisicao_Num'] = df['Valor_Aquisicao_Num'].apply(convert_to_float)
+        
+        if 'Valor_Contabil_Num' in df.columns:
+            df['Valor_Contabil_Num'] = df['Valor_Contabil_Num'].apply(convert_to_float)
+        
+        # Garantir que colunas numéricas sejam numéricas
+        numeric_cols = ['Ano Incorporação', 'Idade_Item', 'Vida', 'Vida_Num']
+        for col in numeric_cols:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors='coerce')
+        
+        # Remover linhas com valores nulos nas colunas críticas
+        df = df.dropna(subset=['Localização', 'Inventário'])
+        
+        return df
+        
+    except Exception as e:
+        st.error(f"Erro ao carregar dados: {str(e)}")
+        return None
 
 # Carregar dados
-try:
-    df = load_data()
-    
+df = load_data()
+
+if df is not None and len(df) > 0:
     # Título principal
     st.title("📊 Dashboard - Reclassificação de Patrimônios para Consumo")
     st.markdown("---")
@@ -67,27 +111,37 @@ try:
     st.sidebar.header("🔍 Filtros")
     
     # Filtro de localização
-    localizacoes = ['Todas'] + sorted(df['Localização'].dropna().unique().tolist())
+    localizacoes_disponiveis = sorted(df['Localização'].dropna().unique().tolist())
+    localizacoes = ['Todas'] + localizacoes_disponiveis
     localizacao_selecionada = st.sidebar.selectbox("Localização", localizacoes)
     
     # Filtro de ano de incorporação
-    ano_min = int(df['Ano Incorporação'].min())
-    ano_max = int(df['Ano Incorporação'].max())
-    anos_selecionados = st.sidebar.slider(
-        "Ano de Incorporação",
-        ano_min, ano_max, (ano_min, ano_max)
-    )
+    anos_validos = df['Ano Incorporação'].dropna()
+    if len(anos_validos) > 0:
+        ano_min = int(anos_validos.min())
+        ano_max = int(anos_validos.max())
+        anos_selecionados = st.sidebar.slider(
+            "Ano de Incorporação",
+            ano_min, ano_max, (ano_min, ano_max)
+        )
+    else:
+        anos_selecionados = (2000, 2025)
     
     # Filtro de idade do item
-    idade_min = int(df['Idade_Item'].min())
-    idade_max = int(df['Idade_Item'].max())
-    idade_selecionada = st.sidebar.slider(
-        "Idade do Item (anos)",
-        idade_min, idade_max, (idade_min, idade_max)
-    )
+    idades_validas = df['Idade_Item'].dropna()
+    if len(idades_validas) > 0:
+        idade_min = int(idades_validas.min())
+        idade_max = int(idades_validas.max())
+        idade_selecionada = st.sidebar.slider(
+            "Idade do Item (anos)",
+            idade_min, idade_max, (idade_min, idade_max)
+        )
+    else:
+        idade_selecionada = (0, 100)
     
     # Filtro de vida útil
-    vida_options = ['Todas'] + sorted(df['Vida'].dropna().unique().tolist())
+    vidas_disponiveis = sorted(df['Vida'].dropna().unique().tolist())
+    vida_options = ['Todas'] + [int(v) for v in vidas_disponiveis if not pd.isna(v)]
     vida_selecionada = st.sidebar.selectbox("Vida Útil (anos)", vida_options)
     
     # Aplicar filtros
@@ -156,13 +210,15 @@ try:
     with col_left:
         # Gráfico 1: Distribuição por Localização
         st.subheader("📍 Top 10 Localizações")
-        top_localizacoes = df_filtrado['Localização'].value_counts().head(10)
+        top_localizacoes = df_filtrado['Localização'].value_counts().head(10).reset_index()
+        top_localizacoes.columns = ['Localização', 'Quantidade']
         fig1 = px.bar(
-            x=top_localizacoes.values,
-            y=top_localizacoes.index,
+            top_localizacoes,
+            x='Quantidade',
+            y='Localização',
             orientation='h',
-            labels={'x': 'Quantidade de Itens', 'y': 'Localização'},
-            color=top_localizacoes.values,
+            labels={'Quantidade': 'Quantidade de Itens', 'Localização': 'Localização'},
+            color='Quantidade',
             color_continuous_scale='Blues'
         )
         fig1.update_layout(
@@ -175,13 +231,15 @@ try:
     with col_right:
         # Gráfico 2: Valor por Localização
         st.subheader("💰 Top 10 Localizações por Valor de Aquisição")
-        valor_por_local = df_filtrado.groupby('Localização')['Valor_Aquisicao_Num'].sum().sort_values(ascending=False).head(10)
+        valor_por_local = df_filtrado.groupby('Localização')['Valor_Aquisicao_Num'].sum().sort_values(ascending=False).head(10).reset_index()
+        valor_por_local.columns = ['Localização', 'Valor_Total']
         fig2 = px.bar(
-            x=valor_por_local.values,
-            y=valor_por_local.index,
+            valor_por_local,
+            x='Valor_Total',
+            y='Localização',
             orientation='h',
-            labels={'x': 'Valor Total (R$)', 'y': 'Localização'},
-            color=valor_por_local.values,
+            labels={'Valor_Total': 'Valor Total (R$)', 'Localização': 'Localização'},
+            color='Valor_Total',
             color_continuous_scale='Greens'
         )
         fig2.update_layout(
@@ -228,13 +286,15 @@ try:
     with col_left3:
         # Gráfico 5: Top 15 Denominações
         st.subheader("🏷️ Top 15 Tipos de Itens Mais Comuns")
-        top_denominacoes = df_filtrado['Denominação do Imobilizado'].value_counts().head(15)
+        top_denominacoes = df_filtrado['Denominação do Imobilizado'].value_counts().head(15).reset_index()
+        top_denominacoes.columns = ['Denominação', 'Quantidade']
         fig5 = px.bar(
-            x=top_denominacoes.values,
-            y=top_denominacoes.index,
+            top_denominacoes,
+            x='Quantidade',
+            y='Denominação',
             orientation='h',
-            labels={'x': 'Quantidade', 'y': 'Tipo de Item'},
-            color=top_denominacoes.values,
+            labels={'Quantidade': 'Quantidade', 'Denominação': 'Tipo de Item'},
+            color='Quantidade',
             color_continuous_scale='Reds'
         )
         fig5.update_layout(
@@ -247,11 +307,13 @@ try:
     with col_right3:
         # Gráfico 6: Distribuição de Vida Útil
         st.subheader("⚙️ Distribuição por Vida Útil")
-        vida_util = df_filtrado['Vida'].value_counts().sort_index()
+        vida_util = df_filtrado['Vida'].value_counts().sort_index().reset_index()
+        vida_util.columns = ['Vida_Util', 'Quantidade']
         fig6 = px.pie(
-            values=vida_util.values,
-            names=vida_util.index,
-            labels={'names': 'Vida Útil (anos)', 'values': 'Quantidade'},
+            vida_util,
+            values='Quantidade',
+            names='Vida_Util',
+            labels={'Vida_Util': 'Vida Útil (anos)', 'Quantidade': 'Quantidade'},
             hole=0.4
         )
         fig6.update_traces(textposition='inside', textinfo='percent+label')
@@ -267,7 +329,7 @@ try:
     with col_dep1:
         # Percentual depreciado
         itens_zerados = len(df_filtrado[df_filtrado['Valor_Contabil_Num'] == 0])
-        perc_zerados = (itens_zerados / len(df_filtrado)) * 100
+        perc_zerados = (itens_zerados / len(df_filtrado)) * 100 if len(df_filtrado) > 0 else 0
         
         st.metric(
             "Itens Totalmente Depreciados",
@@ -278,9 +340,11 @@ try:
         # Gráfico de pizza
         labels_dep = ['Valor Contábil Zero', 'Valor Contábil > Zero']
         values_dep = [itens_zerados, len(df_filtrado) - itens_zerados]
+        df_dep = pd.DataFrame({'Status': labels_dep, 'Quantidade': values_dep})
         fig_dep = px.pie(
-            values=values_dep,
-            names=labels_dep,
+            df_dep,
+            values='Quantidade',
+            names='Status',
             color_discrete_sequence=['#e74c3c', '#3498db']
         )
         fig_dep.update_layout(height=300)
@@ -318,10 +382,11 @@ try:
     # Filtrar por busca se houver
     df_exibir = df_filtrado.copy()
     if busca:
-        df_exibir = df_exibir[
-            df_exibir['Denominação do Imobilizado'].str.contains(busca, case=False, na=False) |
-            df_exibir['Item Consumível Similar'].str.contains(busca, case=False, na=False)
-        ]
+        mask = (
+            df_exibir['Denominação do Imobilizado'].astype(str).str.contains(busca, case=False, na=False) |
+            df_exibir['Item Consumível Similar'].astype(str).str.contains(busca, case=False, na=False)
+        )
+        df_exibir = df_exibir[mask]
     
     # Selecionar colunas para exibição
     colunas_exibir = [
@@ -330,12 +395,15 @@ try:
         'Vida', 'Valor Aquisição', 'Valor Contábil'
     ]
     
+    # Filtrar apenas colunas que existem
+    colunas_existentes = [col for col in colunas_exibir if col in df_exibir.columns]
+    
     # Exibir quantidade de registros
     st.info(f"Exibindo {len(df_exibir):,} de {len(df_filtrado):,} itens".replace(',', '.'))
     
     # Exibir tabela
     st.dataframe(
-        df_exibir[colunas_exibir].head(1000),
+        df_exibir[colunas_existentes].head(1000),
         use_container_width=True,
         height=400
     )
@@ -345,10 +413,10 @@ try:
     col_down1, col_down2, col_down3 = st.columns([1, 1, 2])
     
     with col_down1:
-        csv = df_filtrado.to_csv(index=False, sep=';', encoding='cp1252')
+        csv = df_filtrado.to_csv(index=False, sep=';', encoding='utf-8')
         st.download_button(
             label="📥 Download Dados Filtrados (CSV)",
-            data=csv.encode('cp1252'),
+            data=csv.encode('utf-8'),
             file_name=f"patrimonio_reclassificacao_{datetime.now().strftime('%Y%m%d')}.csv",
             mime="text/csv"
         )
@@ -380,9 +448,404 @@ LOCALIZAÇÕES ATIVAS: {localizacoes_unicas}
             mime="text/plain"
         )
 
-except Exception as e:
-    st.error(f"Erro ao carregar os dados: {str(e)}")
-    st.info("Certifique-se de que o arquivo 'patrimonio_analise_final.csv' está no mesmo diretório do script.")
+else:
+    st.error("❌ Não foi possível carregar os dados. Verifique se o arquivo 'patrimonio_analise_final.csv' está no diretório correto.")
+
+
+
+
+
+
+# import streamlit as st
+# import pandas as pd
+# import plotly.express as px
+# import plotly.graph_objects as go
+# from datetime import datetime
+# import numpy as np
+
+# # Configuração da página
+# st.set_page_config(
+#     page_title="Dashboard - Reclassificação de Patrimônios",
+#     page_icon="📊",
+#     layout="wide",
+#     initial_sidebar_state="expanded"
+# )
+
+# # Estilo customizado
+# st.markdown("""
+#     <style>
+#     .main {
+#         padding: 0rem 1rem;
+#     }
+#     .stMetric {
+#         background-color: #f0f2f6;
+#         padding: 10px;
+#         border-radius: 5px;
+#     }
+#     h1 {
+#         color: #1f77b4;
+#         padding-bottom: 20px;
+#     }
+#     h2 {
+#         color: #2c3e50;
+#         padding-top: 20px;
+#     }
+#     </style>
+#     """, unsafe_allow_html=True)
+
+# # Função para carregar dados
+# @st.cache_data
+# def load_data():
+#     # Ler o CSV com encoding apropriado
+#     df = pd.read_csv('patrimonio_analise_final.csv', 
+#                      sep=';', 
+#                      encoding='cp1252',
+#                      decimal=',')
+    
+#     # Limpar nomes das colunas (remover espaços)
+#     df.columns = df.columns.str.strip()
+    
+#     # Converter valores numéricos se necessário
+#     if 'Valor_Aquisicao_Num' in df.columns:
+#         df['Valor_Aquisicao_Num'] = pd.to_numeric(df['Valor_Aquisicao_Num'], errors='coerce')
+#     if 'Valor_Contabil_Num' in df.columns:
+#         df['Valor_Contabil_Num'] = pd.to_numeric(df['Valor_Contabil_Num'], errors='coerce')
+    
+#     return df
+
+# # Carregar dados
+# try:
+#     df = load_data()
+    
+#     # Título principal
+#     st.title("📊 Dashboard - Reclassificação de Patrimônios para Consumo")
+#     st.markdown("---")
+    
+#     # Sidebar com filtros
+#     st.sidebar.header("🔍 Filtros")
+    
+#     # Filtro de localização
+#     localizacoes = ['Todas'] + sorted(df['Localização'].dropna().unique().tolist())
+#     localizacao_selecionada = st.sidebar.selectbox("Localização", localizacoes)
+    
+#     # Filtro de ano de incorporação
+#     ano_min = int(df['Ano Incorporação'].min())
+#     ano_max = int(df['Ano Incorporação'].max())
+#     anos_selecionados = st.sidebar.slider(
+#         "Ano de Incorporação",
+#         ano_min, ano_max, (ano_min, ano_max)
+#     )
+    
+#     # Filtro de idade do item
+#     idade_min = int(df['Idade_Item'].min())
+#     idade_max = int(df['Idade_Item'].max())
+#     idade_selecionada = st.sidebar.slider(
+#         "Idade do Item (anos)",
+#         idade_min, idade_max, (idade_min, idade_max)
+#     )
+    
+#     # Filtro de vida útil
+#     vida_options = ['Todas'] + sorted(df['Vida'].dropna().unique().tolist())
+#     vida_selecionada = st.sidebar.selectbox("Vida Útil (anos)", vida_options)
+    
+#     # Aplicar filtros
+#     df_filtrado = df.copy()
+    
+#     if localizacao_selecionada != 'Todas':
+#         df_filtrado = df_filtrado[df_filtrado['Localização'] == localizacao_selecionada]
+    
+#     df_filtrado = df_filtrado[
+#         (df_filtrado['Ano Incorporação'] >= anos_selecionados[0]) &
+#         (df_filtrado['Ano Incorporação'] <= anos_selecionados[1])
+#     ]
+    
+#     df_filtrado = df_filtrado[
+#         (df_filtrado['Idade_Item'] >= idade_selecionada[0]) &
+#         (df_filtrado['Idade_Item'] <= idade_selecionada[1])
+#     ]
+    
+#     if vida_selecionada != 'Todas':
+#         df_filtrado = df_filtrado[df_filtrado['Vida'] == vida_selecionada]
+    
+#     # KPIs Principais
+#     st.header("📈 Indicadores Principais")
+    
+#     col1, col2, col3, col4, col5 = st.columns(5)
+    
+#     with col1:
+#         st.metric(
+#             "Total de Itens",
+#             f"{len(df_filtrado):,}".replace(',', '.')
+#         )
+    
+#     with col2:
+#         valor_total_aquisicao = df_filtrado['Valor_Aquisicao_Num'].sum()
+#         st.metric(
+#             "Valor Total Aquisição",
+#             f"R$ {valor_total_aquisicao:,.2f}".replace(',', 'X').replace('.', ',').replace('X', '.')
+#         )
+    
+#     with col3:
+#         valor_total_contabil = df_filtrado['Valor_Contabil_Num'].sum()
+#         st.metric(
+#             "Valor Total Contábil",
+#             f"R$ {valor_total_contabil:,.2f}".replace(',', 'X').replace('.', ',').replace('X', '.')
+#         )
+    
+#     with col4:
+#         idade_media = df_filtrado['Idade_Item'].mean()
+#         st.metric(
+#             "Idade Média dos Itens",
+#             f"{idade_media:.1f} anos"
+#         )
+    
+#     with col5:
+#         localizacoes_unicas = df_filtrado['Localização'].nunique()
+#         st.metric(
+#             "Localizações",
+#             f"{localizacoes_unicas}"
+#         )
+    
+#     st.markdown("---")
+    
+#     # Layout em duas colunas para gráficos
+#     col_left, col_right = st.columns(2)
+    
+#     with col_left:
+#         # Gráfico 1: Distribuição por Localização
+#         st.subheader("📍 Top 10 Localizações")
+#         top_localizacoes = df_filtrado['Localização'].value_counts().head(10)
+#         fig1 = px.bar(
+#             x=top_localizacoes.values,
+#             y=top_localizacoes.index,
+#             orientation='h',
+#             labels={'x': 'Quantidade de Itens', 'y': 'Localização'},
+#             color=top_localizacoes.values,
+#             color_continuous_scale='Blues'
+#         )
+#         fig1.update_layout(
+#             showlegend=False,
+#             height=400,
+#             yaxis={'categoryorder': 'total ascending'}
+#         )
+#         st.plotly_chart(fig1, use_container_width=True)
+    
+#     with col_right:
+#         # Gráfico 2: Valor por Localização
+#         st.subheader("💰 Top 10 Localizações por Valor de Aquisição")
+#         valor_por_local = df_filtrado.groupby('Localização')['Valor_Aquisicao_Num'].sum().sort_values(ascending=False).head(10)
+#         fig2 = px.bar(
+#             x=valor_por_local.values,
+#             y=valor_por_local.index,
+#             orientation='h',
+#             labels={'x': 'Valor Total (R$)', 'y': 'Localização'},
+#             color=valor_por_local.values,
+#             color_continuous_scale='Greens'
+#         )
+#         fig2.update_layout(
+#             showlegend=False,
+#             height=400,
+#             yaxis={'categoryorder': 'total ascending'}
+#         )
+#         st.plotly_chart(fig2, use_container_width=True)
+    
+#     # Segunda linha de gráficos
+#     col_left2, col_right2 = st.columns(2)
+    
+#     with col_left2:
+#         # Gráfico 3: Distribuição por Ano de Incorporação
+#         st.subheader("📅 Itens por Ano de Incorporação")
+#         itens_por_ano = df_filtrado.groupby('Ano Incorporação').size().reset_index(name='Quantidade')
+#         fig3 = px.line(
+#             itens_por_ano,
+#             x='Ano Incorporação',
+#             y='Quantidade',
+#             markers=True,
+#             labels={'Ano Incorporação': 'Ano', 'Quantidade': 'Quantidade de Itens'}
+#         )
+#         fig3.update_traces(line_color='#1f77b4', marker=dict(size=8))
+#         fig3.update_layout(height=400)
+#         st.plotly_chart(fig3, use_container_width=True)
+    
+#     with col_right2:
+#         # Gráfico 4: Distribuição de Idade dos Itens
+#         st.subheader("⏳ Distribuição de Idade dos Itens")
+#         fig4 = px.histogram(
+#             df_filtrado,
+#             x='Idade_Item',
+#             nbins=30,
+#             labels={'Idade_Item': 'Idade (anos)', 'count': 'Quantidade'},
+#             color_discrete_sequence=['#ff7f0e']
+#         )
+#         fig4.update_layout(height=400)
+#         st.plotly_chart(fig4, use_container_width=True)
+    
+#     # Terceira linha de gráficos
+#     col_left3, col_right3 = st.columns(2)
+    
+#     with col_left3:
+#         # Gráfico 5: Top 15 Denominações
+#         st.subheader("🏷️ Top 15 Tipos de Itens Mais Comuns")
+#         top_denominacoes = df_filtrado['Denominação do Imobilizado'].value_counts().head(15)
+#         fig5 = px.bar(
+#             x=top_denominacoes.values,
+#             y=top_denominacoes.index,
+#             orientation='h',
+#             labels={'x': 'Quantidade', 'y': 'Tipo de Item'},
+#             color=top_denominacoes.values,
+#             color_continuous_scale='Reds'
+#         )
+#         fig5.update_layout(
+#             showlegend=False,
+#             height=500,
+#             yaxis={'categoryorder': 'total ascending'}
+#         )
+#         st.plotly_chart(fig5, use_container_width=True)
+    
+#     with col_right3:
+#         # Gráfico 6: Distribuição de Vida Útil
+#         st.subheader("⚙️ Distribuição por Vida Útil")
+#         vida_util = df_filtrado['Vida'].value_counts().sort_index()
+#         fig6 = px.pie(
+#             values=vida_util.values,
+#             names=vida_util.index,
+#             labels={'names': 'Vida Útil (anos)', 'values': 'Quantidade'},
+#             hole=0.4
+#         )
+#         fig6.update_traces(textposition='inside', textinfo='percent+label')
+#         fig6.update_layout(height=500)
+#         st.plotly_chart(fig6, use_container_width=True)
+    
+#     # Análise de Valor Contábil
+#     st.markdown("---")
+#     st.subheader("💵 Análise de Depreciação")
+    
+#     col_dep1, col_dep2 = st.columns(2)
+    
+#     with col_dep1:
+#         # Percentual depreciado
+#         itens_zerados = len(df_filtrado[df_filtrado['Valor_Contabil_Num'] == 0])
+#         perc_zerados = (itens_zerados / len(df_filtrado)) * 100
+        
+#         st.metric(
+#             "Itens Totalmente Depreciados",
+#             f"{itens_zerados:,}".replace(',', '.'),
+#             f"{perc_zerados:.1f}% do total"
+#         )
+        
+#         # Gráfico de pizza
+#         labels_dep = ['Valor Contábil Zero', 'Valor Contábil > Zero']
+#         values_dep = [itens_zerados, len(df_filtrado) - itens_zerados]
+#         fig_dep = px.pie(
+#             values=values_dep,
+#             names=labels_dep,
+#             color_discrete_sequence=['#e74c3c', '#3498db']
+#         )
+#         fig_dep.update_layout(height=300)
+#         st.plotly_chart(fig_dep, use_container_width=True)
+    
+#     with col_dep2:
+#         # Valor médio
+#         valor_medio_aquisicao = df_filtrado['Valor_Aquisicao_Num'].mean()
+#         valor_medio_contabil = df_filtrado['Valor_Contabil_Num'].mean()
+        
+#         st.metric(
+#             "Valor Médio de Aquisição",
+#             f"R$ {valor_medio_aquisicao:,.2f}".replace(',', 'X').replace('.', ',').replace('X', '.')
+#         )
+#         st.metric(
+#             "Valor Médio Contábil",
+#             f"R$ {valor_medio_contabil:,.2f}".replace(',', 'X').replace('.', ',').replace('X', '.')
+#         )
+        
+#         # Taxa de depreciação média
+#         if valor_medio_aquisicao > 0:
+#             taxa_dep = ((valor_medio_aquisicao - valor_medio_contabil) / valor_medio_aquisicao) * 100
+#             st.metric(
+#                 "Taxa Média de Depreciação",
+#                 f"{taxa_dep:.1f}%"
+#             )
+    
+#     # Tabela de dados com busca
+#     st.markdown("---")
+#     st.subheader("📋 Dados Detalhados dos Itens")
+    
+#     # Campo de busca
+#     busca = st.text_input("🔍 Buscar por denominação ou item consumível:", "")
+    
+#     # Filtrar por busca se houver
+#     df_exibir = df_filtrado.copy()
+#     if busca:
+#         df_exibir = df_exibir[
+#             df_exibir['Denominação do Imobilizado'].str.contains(busca, case=False, na=False) |
+#             df_exibir['Item Consumível Similar'].str.contains(busca, case=False, na=False)
+#         ]
+    
+#     # Selecionar colunas para exibição
+#     colunas_exibir = [
+#         'Localização', 'Inventário', 'Denominação do Imobilizado',
+#         'Item Consumível Similar', 'Ano Incorporação', 'Idade_Item',
+#         'Vida', 'Valor Aquisição', 'Valor Contábil'
+#     ]
+    
+#     # Exibir quantidade de registros
+#     st.info(f"Exibindo {len(df_exibir):,} de {len(df_filtrado):,} itens".replace(',', '.'))
+    
+#     # Exibir tabela
+#     st.dataframe(
+#         df_exibir[colunas_exibir].head(1000),
+#         use_container_width=True,
+#         height=400
+#     )
+    
+#     # Download dos dados filtrados
+#     st.markdown("---")
+#     col_down1, col_down2, col_down3 = st.columns([1, 1, 2])
+    
+#     with col_down1:
+#         csv = df_filtrado.to_csv(index=False, sep=';', encoding='cp1252')
+#         st.download_button(
+#             label="📥 Download Dados Filtrados (CSV)",
+#             data=csv.encode('cp1252'),
+#             file_name=f"patrimonio_reclassificacao_{datetime.now().strftime('%Y%m%d')}.csv",
+#             mime="text/csv"
+#         )
+    
+#     with col_down2:
+#         # Resumo executivo
+#         resumo = f"""
+# RESUMO EXECUTIVO - RECLASSIFICAÇÃO DE PATRIMÔNIOS
+# Data: {datetime.now().strftime('%d/%m/%Y')}
+
+# INDICADORES GERAIS:
+# - Total de Itens: {len(df_filtrado):,}
+# - Valor Total de Aquisição: R$ {valor_total_aquisicao:,.2f}
+# - Valor Total Contábil: R$ {valor_total_contabil:,.2f}
+# - Idade Média: {idade_media:.1f} anos
+# - Itens Totalmente Depreciados: {itens_zerados:,} ({perc_zerados:.1f}%)
+
+# PERÍODO:
+# - Ano de Incorporação: {anos_selecionados[0]} a {anos_selecionados[1]}
+# - Faixa de Idade: {idade_selecionada[0]} a {idade_selecionada[1]} anos
+
+# LOCALIZAÇÕES ATIVAS: {localizacoes_unicas}
+#         """.replace(',', '.')
+        
+#         st.download_button(
+#             label="📄 Download Resumo Executivo",
+#             data=resumo,
+#             file_name=f"resumo_executivo_{datetime.now().strftime('%Y%m%d')}.txt",
+#             mime="text/plain"
+#         )
+
+# except Exception as e:
+#     st.error(f"Erro ao carregar os dados: {str(e)}")
+#     st.info("Certifique-se de que o arquivo 'patrimonio_analise_final.csv' está no mesmo diretório do script.")
+
+
+
+
+
 
 
 # import streamlit as st
